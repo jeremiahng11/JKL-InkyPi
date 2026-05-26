@@ -41,7 +41,7 @@ def get_http_session() -> requests.Session:
 
         # Set common headers for all InkyPi requests
         _HTTP_SESSION.headers.update({
-            'User-Agent': 'InkyPi-JKL/1.0 (https://github.com/jeremiahng11/InkyPi/)'
+            'User-Agent': 'InkyPi-JKL/1.0 (https://github.com/jeremiahng11/JKL-InkyPi/)'
         })
 
         # Configure connection pool
