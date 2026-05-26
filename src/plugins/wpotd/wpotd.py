@@ -34,7 +34,7 @@ from typing import Dict, Any
 logger = logging.getLogger(__name__)
 
 class Wpotd(BasePlugin):
-    HEADERS = {'User-Agent': 'InkyPi/1.0 (https://github.com/fatihak/InkyPi/)'}
+    HEADERS = {'User-Agent': 'InkyPi-JKL/1.0 (https://github.com/jeremiahng11/InkyPi/)'}
     API_URL = "https://en.wikipedia.org/w/api.php"
 
     def generate_settings_template(self) -> Dict[str, Any]:

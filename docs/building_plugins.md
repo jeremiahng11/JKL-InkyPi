@@ -180,9 +180,4 @@ Your repository must include:
     - Whether the API requires a key and any known usage limits or costs (for example, free tiers or rate limits).
   - The current development status (for example: actively maintained, work in progress, looking for a maintainer, or no longer maintained).
 
----
-
-See [InkyPi-Plugin-Template](https://github.com/fatihak/InkyPi-Plugin-Template) for a sample template of a third party plugin.
-
-Once you're done, feel free to add your plugin to the [3rd Party Plugin List](https://github.com/fatihak/InkyPi/wiki/3rd-Party-Plugins) and share it in the [🙌 Show and Tell Discussion Board](https://github.com/fatihak/InkyPi/discussions/categories/show-and-tell).
 

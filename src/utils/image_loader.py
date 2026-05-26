@@ -54,7 +54,7 @@ class AdaptiveImageLoader:
 
     # Default headers to avoid 403 errors from sites that block requests without User-Agent
     DEFAULT_HEADERS = {
-        'User-Agent': 'InkyPi/1.0 (https://github.com/fatihak/InkyPi/) Python-requests'
+        'User-Agent': 'InkyPi-JKL/1.0 (https://github.com/jeremiahng11/InkyPi/) Python-requests'
     }
 
     def __init__(self):
