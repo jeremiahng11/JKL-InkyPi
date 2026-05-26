@@ -12,3 +12,8 @@ swig
 liblgpio-dev
 libheif-dev
 jq
+# BLE peripheral (inkypi-ble.service)
+bluez
+bluez-tools
+# AP fallback (inkypi-netd.service) — NetworkManager is default on Bookworm
+network-manager

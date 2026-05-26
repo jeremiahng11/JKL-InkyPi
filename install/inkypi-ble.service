@@ -1,0 +1,18 @@
+[Unit]
+Description=InkyPi BLE Peripheral
+After=bluetooth.service inkypi.service
+Wants=bluetooth.service
+
+[Service]
+User=root
+ExecStart=/usr/local/bin/inkypi-ble
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGINT
+StandardOutput=journal
+StandardError=journal
+CPUQuota=15%
+MemoryMax=80M
+
+[Install]
+WantedBy=multi-user.target

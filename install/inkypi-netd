@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+# entry script for inkypi-netd.service — runs the connectivity monitor that
+# fails over to the Pi's own access point when the upstream Wi-Fi is down.
+
+export APPNAME="inkypi"
+export PROGRAM_PATH=/usr/local/inkypi
+export VENV_PATH="$PROGRAM_PATH/venv_inkypi"
+
+export SRC_DIR="$PROGRAM_PATH/src"
+
+source "$VENV_PATH/bin/activate"
+exec python -u "$(realpath "$PROGRAM_PATH/src/inkypi_netd.py")"

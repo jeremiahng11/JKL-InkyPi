@@ -37,6 +37,10 @@ SERVICE_FILE="$APPNAME.service"
 SERVICE_FILE_SOURCE="$SCRIPT_DIR/$SERVICE_FILE"
 SERVICE_FILE_TARGET="/etc/systemd/system/$SERVICE_FILE"
 
+# Additional services for BLE control + AP fallback
+EXTRA_SERVICES=("inkypi-ble.service" "inkypi-netd.service")
+EXTRA_BIN_SCRIPTS=("inkypi-ble" "inkypi-netd")
+
 APT_REQUIREMENTS_FILE="$SCRIPT_DIR/debian-requirements.txt"
 PIP_REQUIREMENTS_FILE="$SCRIPT_DIR/requirements.txt"
 
@@ -233,10 +237,39 @@ install_app_service() {
   fi
 }
 
+install_extra_services() {
+  for unit in "${EXTRA_SERVICES[@]}"; do
+    local source="$SCRIPT_DIR/$unit"
+    local target="/etc/systemd/system/$unit"
+    if [ ! -f "$source" ]; then
+      echo_error "ERROR: Extra service file $source not found!"
+      exit 1
+    fi
+    cp "$source" "$target"
+    sudo systemctl enable "$unit" > /dev/null
+    echo_success "\tInstalled and enabled $unit"
+  done
+  sudo systemctl daemon-reload
+}
+
 install_executable() {
   echo "Adding executable to ${BINPATH}/$APPNAME"
   cp $SCRIPT_DIR/inkypi $BINPATH/
   sudo chmod +x $BINPATH/$APPNAME
+
+  for entry in "${EXTRA_BIN_SCRIPTS[@]}"; do
+    if [ -f "$SCRIPT_DIR/$entry" ]; then
+      cp "$SCRIPT_DIR/$entry" "$BINPATH/"
+      sudo chmod +x "$BINPATH/$entry"
+      echo_success "\tInstalled $BINPATH/$entry"
+    fi
+  done
+}
+
+enable_bluetooth() {
+  echo "Enabling and starting bluetooth service for BLE peripheral."
+  sudo systemctl enable bluetooth > /dev/null
+  sudo systemctl start bluetooth > /dev/null
 }
 
 install_config() {
@@ -383,6 +416,8 @@ if [[ -n "$WS_TYPE" ]]; then
   update_config
 fi
 install_app_service
+install_extra_services
+enable_bluetooth
 
 echo "Update JS and CSS files"
 bash $SCRIPT_DIR/update_vendors.sh > /dev/null

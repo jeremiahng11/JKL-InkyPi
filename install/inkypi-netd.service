@@ -1,0 +1,19 @@
+[Unit]
+Description=InkyPi Connectivity Monitor (AP fallback)
+After=NetworkManager.service
+Wants=NetworkManager.service
+ConditionPathExists=/usr/bin/nmcli
+
+[Service]
+User=root
+ExecStart=/usr/local/bin/inkypi-netd
+Restart=on-failure
+RestartSec=15
+KillSignal=SIGINT
+StandardOutput=journal
+StandardError=journal
+CPUQuota=10%
+MemoryMax=40M
+
+[Install]
+WantedBy=multi-user.target

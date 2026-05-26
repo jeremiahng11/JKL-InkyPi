@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+# entry script for inkypi-ble.service — launches the BLE GATT peripheral.
+
+export APPNAME="inkypi"
+export PROGRAM_PATH=/usr/local/inkypi
+export VENV_PATH="$PROGRAM_PATH/venv_inkypi"
+
+export SRC_DIR="$PROGRAM_PATH/src"
+
+source "$VENV_PATH/bin/activate"
+cd "$SRC_DIR"
+exec python -u -m ble.service

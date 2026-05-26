@@ -11,6 +11,8 @@ INSTALL_PATH="/usr/local/$APPNAME"
 BINPATH="/usr/local/bin"
 VENV_PATH="$INSTALL_PATH/venv_$APPNAME"
 SERVICE_FILE="/etc/systemd/system/$APPNAME.service"
+EXTRA_SERVICES=("inkypi-ble.service" "inkypi-netd.service")
+EXTRA_BIN_SCRIPTS=("inkypi-ble" "inkypi-netd")
 CONFIG_DIR="$INSTALL_PATH/src/config"
 
 echo_success() {
@@ -58,6 +60,28 @@ disable_service() {
   else
     echo_success "\tService file does not exist. Nothing to remove."
   fi
+}
+
+stop_extra_services() {
+  for unit in "${EXTRA_SERVICES[@]}"; do
+    if /usr/bin/systemctl is-active --quiet "$unit"; then
+      /usr/bin/systemctl stop "$unit"
+      echo_success "\tStopped $unit"
+    fi
+    if [ -f "/etc/systemd/system/$unit" ]; then
+      /usr/bin/systemctl disable "$unit" 2>/dev/null || true
+      rm -f "/etc/systemd/system/$unit"
+      echo_success "\tRemoved unit $unit"
+    fi
+  done
+  /usr/bin/systemctl daemon-reload
+
+  for entry in "${EXTRA_BIN_SCRIPTS[@]}"; do
+    if [ -f "$BINPATH/$entry" ]; then
+      rm -f "$BINPATH/$entry"
+      echo_success "\tRemoved $BINPATH/$entry"
+    fi
+  done
 }
 
 remove_files() {
@@ -108,6 +132,7 @@ check_permissions
 confirm_uninstall
 stop_service
 disable_service
+stop_extra_services
 remove_files
 
 echo_success "Uninstallation complete."
