@@ -9,6 +9,8 @@ InkyPi is an open-source, customizable E-Ink display powered by a Raspberry Pi. 
 **Features**:
 - Natural paper-like aethetic: crisp, minimalist visuals that are easy on the eyes, with no glare or backlight
 - Web Interface allows you to update and configure the display from any device on your network
+- **Bluetooth control via the InkyPi Companion app** — set up Wi-Fi, swap plugins, upload images, and tweak settings from your phone with no web browser needed
+- **Wi-Fi hotspot fallback** — when InkyPi has no upstream network it broadcasts its own access point so you're never locked out, even on a fresh install
 - Minimize distractions: no LEDS, noise, or notifications, just the content you care about
 - Easy installation and configuration, perfect for beginners and makers alike
 - Open source project allowing you to modify, customize, and create your own plugins
@@ -24,6 +26,59 @@ InkyPi is an open-source, customizable E-Ink display powered by a Raspberry Pi. 
 - Calendar: Visualize your calendar from Google, Outlook, or Apple Calendar with customizable layouts
 
 And additional plugins coming soon! For documentation on building custom plugins, see [Building InkyPi Plugins](./docs/building_plugins.md).
+
+## Mobile Companion App
+
+InkyPi ships with a Bluetooth Low Energy interface so you can control the
+display from a Flutter-based mobile app instead of (or alongside) the web
+UI. Useful when:
+
+- You're setting up a brand-new Pi and don't have a keyboard or known
+  Wi-Fi network on hand
+- Your home Wi-Fi is down but you still want to swap what's on the screen
+- You just prefer a tap-to-do-everything experience over visiting a URL
+
+Companion app source + build instructions:
+**[InkyPi-Companion](https://github.com/jeremiahng11/InkyPi-Companion)** (Android + iOS).
+
+### What you can do from the app
+
+| Screen | Capability |
+|--------|------------|
+| **Scan** | Find any InkyPi within Bluetooth range (~10m) |
+| **Dashboard** | Live device status (Wi-Fi mode, IP, current plugin, display resolution) |
+| **Wi-Fi setup** | Scan visible networks, enter password, join — fully via BLE so it works before any Wi-Fi is configured |
+| **Plugins & playlists** | Browse configured playlists and push any plugin instance to the display instantly |
+| **Upload image** | Pick from gallery or camera, stream the image to the Pi over BLE (or much faster over Wi-Fi when both are on the same network) |
+| **Settings** | Device name, timezone, orientation, plugin cycle, image tuning, reboot/shutdown |
+
+### First-time setup walkthrough
+
+1. Flash Raspberry Pi OS Bookworm onto a microSD card and boot the Pi
+   (no Wi-Fi configuration needed during flashing).
+2. Install InkyPi via the instructions below. After reboot, the Pi will:
+   - Try any configured Wi-Fi network for ~45 seconds.
+   - If no network is reachable, broadcast its own Wi-Fi hotspot named
+     `InkyPi-<hostname>` and start advertising over Bluetooth.
+3. Install the companion app on your phone, open it, and tap **Find
+   InkyPi**. Pick your device from the scan list (`InkyPi-<hostname>`).
+4. On the dashboard, open **Wi-Fi setup**, choose your home network, enter
+   the password, and tap **Connect**. The Pi joins your network and the
+   hotspot turns itself off.
+5. From this point on, BLE handles low-bandwidth commands (settings,
+   plugin switching, Wi-Fi changes) and Wi-Fi handles high-throughput
+   tasks (image upload, live preview).
+
+### Notes
+
+- BLE image uploads work without any Wi-Fi but are bandwidth-limited
+  (~5–15 KB/s on Pi Zero 2 W). For frequent uploads, keep the Pi on a
+  shared Wi-Fi network — the app uses HTTP over Wi-Fi automatically when
+  available.
+- The hotspot password is auto-generated on first boot and persisted in
+  `device.json`. Read it via the **Dashboard** screen in the app.
+- See [docs/bluetooth.md](./docs/bluetooth.md) for the full GATT
+  protocol spec if you want to write your own client.
 
 ## Hardware 
 - Raspberry Pi (4 | 3 | Zero 2 W)
@@ -78,9 +133,18 @@ To install InkyPi, follow these steps:
 
 After the installation is complete, the script will prompt you to reboot your Raspberry Pi. Once rebooted, the display will update to show the InkyPi splash screen.
 
+**Services installed:**
+- `inkypi.service` — the Flask web UI and refresh task.
+- `inkypi-ble.service` — Bluetooth Low Energy peripheral for the
+  companion app. Advertises as `InkyPi-<hostname>`.
+- `inkypi-netd.service` — connectivity monitor that toggles the Pi's
+  Wi-Fi access point when no upstream network is reachable. Requires
+  Raspberry Pi OS Bookworm (NetworkManager).
+
 Note: 
 - The installation script requires sudo privileges to install and run the service. We recommend starting with a fresh installation of Raspberry Pi OS to avoid potential conflicts with existing software or configurations.
 - The installation process will automatically enable the required SPI and I2C interfaces on your Raspberry Pi.
+- Bluetooth and NetworkManager are enabled automatically — no extra steps needed.
 
 For more details, including instructions on how to image your microSD with Raspberry Pi OS, refer to [installation.md](./docs/installation.md). You can also checkout [this YouTube tutorial](https://youtu.be/L5PvQj1vfC4).
 
