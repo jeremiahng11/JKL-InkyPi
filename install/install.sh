@@ -186,9 +186,13 @@ echo_blue() {
 install_debian_dependencies() {
   if [ -f "$APT_REQUIREMENTS_FILE" ]; then
     sudo apt-get update > /dev/null &
-    show_loader "Fetch available system dependencies updates. " 
+    show_loader "Fetch available system dependencies updates. "
 
-    xargs -a "$APT_REQUIREMENTS_FILE" sudo apt-get install -y > /dev/null &
+    # Strip comment lines (#…) and blank lines before handing the package
+    # list to apt — xargs itself doesn't understand requirements-file
+    # comment syntax, so we filter them out first.
+    grep -vE '^[[:space:]]*(#|$)' "$APT_REQUIREMENTS_FILE" \
+      | xargs sudo apt-get install -y > /dev/null &
     show_loader "Installing system dependencies. "
   else
     echo "ERROR: System dependencies file $APT_REQUIREMENTS_FILE not found!"

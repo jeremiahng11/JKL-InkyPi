@@ -80,7 +80,11 @@ fi
 apt-get update -y > /dev/null &
 if [ -f "$APT_REQUIREMENTS_FILE" ]; then
   echo "Installing system dependencies... "
-  xargs -a "$APT_REQUIREMENTS_FILE" sudo apt-get install -y > /dev/null && echo_success "Installed system dependencies."
+  # Strip comment / blank lines before handing the package list to apt
+  # (xargs doesn't understand requirements-file comment syntax).
+  grep -vE '^[[:space:]]*(#|$)' "$APT_REQUIREMENTS_FILE" \
+    | xargs sudo apt-get install -y > /dev/null \
+    && echo_success "Installed system dependencies."
 else
   echo_error "ERROR: System dependencies file $APT_REQUIREMENTS_FILE not found!"
   exit 1
