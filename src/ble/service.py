@@ -50,8 +50,14 @@ def _import_bless():
             GATTCharacteristicProperties,
         )
     except ImportError as exc:
+        # Surface the underlying error rather than asserting bless is missing —
+        # an import failure on Linux is usually a transitive dep / Python
+        # version compatibility issue (e.g. dbus-fast on Python 3.13), not a
+        # missing package.
         raise _BlessUnavailable(
-            "bless is not installed; this service only runs on Linux with BlueZ"
+            f"Could not import bless ({exc.__class__.__name__}: {exc}). "
+            "If bless appears installed, this is most likely a transitive "
+            "dependency or Python version compatibility issue."
         ) from exc
     return BlessServer, GATTCharacteristicProperties, GATTAttributePermissions
 
@@ -255,6 +261,8 @@ def main() -> int:
         loop.run_until_complete(service.run())
     except _BlessUnavailable as exc:
         logger.error("%s", exc)
+        if exc.__cause__:
+            logger.error("Underlying import error chain:", exc_info=exc.__cause__)
         return 1
     finally:
         loop.close()
