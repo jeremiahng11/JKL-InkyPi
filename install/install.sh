@@ -369,7 +369,7 @@ ask_for_reboot() {
   echo_header "$(echo_success "${APPNAME^^} Installation Complete!")"
   echo_header "[•] A reboot of your Raspberry Pi is required for the changes to take effect"
   echo_header "[•] After your Pi is rebooted, you can access the web UI by going to $(echo_blue "'$hostname.local'") or $(echo_blue "'$ip_address'") in your browser."
-  echo_header "[•] If you encounter any issues or have suggestions, please submit them here: https://github.com/fatihak/InkyPi/issues"
+  echo_header "[•] If you encounter any issues or have suggestions, please submit them here: https://github.com/jeremiahng11/InkyPi/issues"
 
   read -p "Would you like to restart your Raspberry Pi now? [Y/N] " userInput
   userInput="${userInput^^}"
