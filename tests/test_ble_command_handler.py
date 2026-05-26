@@ -155,6 +155,93 @@ class TestWriteOpsBridgeCalls:
         assert bridge.calls == [("POST_JSON", "/shutdown", {"reboot": True})]
 
 
+class TestRedisplayLast:
+    """``redisplay_last`` re-shows the most recent playlist instance. It
+    cannot replay a one-off ``ManualRefresh`` because those don't persist
+    their settings, so the op must error clearly in that case."""
+
+    def _config_with(self, tmp_path, refresh_info: dict | None) -> str:
+        cfg = {
+            "name": "TestPi",
+            "playlist_config": {"playlists": []},
+            "plugin_order": [],
+            "plugin_order_metadata": [],
+        }
+        if refresh_info is not None:
+            cfg["refresh_info"] = refresh_info
+        path = tmp_path / "device.json"
+        path.write_text(json.dumps(cfg))
+        return str(path)
+
+    def test_redisplays_previous_playlist_entry(self, tmp_path):
+        path = self._config_with(tmp_path, {
+            "refresh_type": "Playlist",
+            "playlist": "Morning",
+            "plugin_id": "weather",
+            "plugin_instance": "Home Weather",
+        })
+        bridge = FakeBridge()
+        h = CommandHandler(bridge, config_file=path)
+        resp = _invoke(h, "redisplay_last")
+        assert resp["status"] == "ok"
+        assert bridge.calls == [
+            ("POST_JSON", "/display_plugin_instance", {
+                "playlist_name": "Morning",
+                "plugin_id": "weather",
+                "plugin_instance": "Home Weather",
+            }),
+        ]
+
+    def test_rejects_when_previous_was_manual_update(self, tmp_path):
+        path = self._config_with(tmp_path, {
+            "refresh_type": "Manual Update",
+            "plugin_id": "image_upload",
+        })
+        bridge = FakeBridge()
+        h = CommandHandler(bridge, config_file=path)
+        resp = _invoke(h, "redisplay_last")
+        assert resp["status"] == "error"
+        assert "one-off" in resp["error"]
+        assert bridge.calls == []
+
+    def test_rejects_when_refresh_info_empty(self, tmp_path):
+        path = self._config_with(tmp_path, None)
+        bridge = FakeBridge()
+        h = CommandHandler(bridge, config_file=path)
+        resp = _invoke(h, "redisplay_last")
+        assert resp["status"] == "error"
+        assert "never displayed" in resp["error"]
+        assert bridge.calls == []
+
+    def test_rejects_when_plugin_id_missing(self, tmp_path):
+        # Defensive: playlist + instance present but plugin_id somehow not.
+        # Shouldn't happen in practice but a malformed config shouldn't crash.
+        path = self._config_with(tmp_path, {
+            "refresh_type": "Playlist",
+            "playlist": "Morning",
+            "plugin_instance": "Home Weather",
+        })
+        h = CommandHandler(FakeBridge(), config_file=path)
+        resp = _invoke(h, "redisplay_last")
+        assert resp["status"] == "error"
+        assert "plugin_id" in resp["error"]
+
+    def test_old_op_name_refresh_now_is_not_dispatched(self, tmp_path):
+        # During the rename we kept no backward-compat alias because the op
+        # was never released. Make sure the old name is rejected, not
+        # silently dispatched.
+        path = self._config_with(tmp_path, {
+            "refresh_type": "Playlist",
+            "playlist": "Morning",
+            "plugin_id": "weather",
+            "plugin_instance": "Home Weather",
+        })
+        h = CommandHandler(FakeBridge(), config_file=path)
+        resp = _invoke(h, "refresh_now")
+        assert resp["status"] == "error"
+        assert "unknown op" in resp["error"]
+
+
 class TestErrorPaths:
     def test_unknown_op_returns_error(self, fake_config):
         h = CommandHandler(FakeBridge(), config_file=fake_config)

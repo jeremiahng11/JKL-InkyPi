@@ -146,7 +146,7 @@ one (possibly fragmented) JSON response on `RESP` with the same `id`.
 | `delete_plugin_instance`    | `playlist_name`, `plugin_id`, `plugin_instance`                   | `POST /delete_plugin_instance` |
 | `set_plugin_order`          | `order` (list of plugin ids)                                      | `POST /api/plugin_order`    |
 | `set_apikey`                | `entries` (list of `{key,value,keepExisting}`)                    | `POST /api-keys/save`       |
-| `refresh_now`               | —                                                                 | `POST /update_now` for current plugin |
+| `redisplay_last`            | —                                                                 | `POST /display_plugin_instance` for the last playlist entry (errors if last display was a one-off update) |
 | `reboot`                    | —                                                                 | `POST /shutdown {reboot:true}` |
 | `shutdown`                  | —                                                                 | `POST /shutdown`            |
 

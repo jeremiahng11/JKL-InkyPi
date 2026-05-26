@@ -45,7 +45,7 @@ class CommandHandler:
             "delete_plugin_instance":  self._op_delete_plugin_instance,
             "set_plugin_order":        self._op_set_plugin_order,
             "set_apikey":              self._op_set_apikey,
-            "refresh_now":             self._op_refresh_now,
+            "redisplay_last":          self._op_redisplay_last,
             "reboot":                  self._op_reboot,
             "shutdown":                self._op_shutdown,
         }
@@ -183,20 +183,36 @@ class CommandHandler:
             raise CommandError("entries must be a list")
         return self._bridge_result(self.bridge.post_json("/api-keys/save", payload={"entries": entries}))
 
-    def _op_refresh_now(self, _data: dict) -> Any:
-        # /update_now requires a plugin_id and the existing settings. For
-        # "refresh whatever is currently on screen" the Flask app uses the
-        # refresh task's cycle; no dedicated endpoint exists. Best-effort:
-        # re-display the most recently displayed playlist instance.
+    def _op_redisplay_last(self, _data: dict) -> Any:
+        # Re-shows the most recently displayed playlist instance. Only works
+        # when the previous refresh was a PlaylistRefresh — a ManualRefresh
+        # (one-off /update_now) doesn't persist its settings, so there's
+        # nothing to replay.
         cfg = self._read_config()
-        last = cfg.get("refresh_info", {}).get("plugin_instance")
-        playlist = cfg.get("refresh_info", {}).get("playlist")
-        plugin_id = cfg.get("refresh_info", {}).get("plugin_id")
-        if not (last and playlist and plugin_id):
-            raise CommandError("no previous display info available to refresh")
+        info = cfg.get("refresh_info") or {}
+        if not info:
+            raise CommandError("device has never displayed anything yet")
+
+        refresh_type = info.get("refresh_type")
+        instance = info.get("plugin_instance")
+        playlist = info.get("playlist")
+        plugin_id = info.get("plugin_id")
+
+        if refresh_type == "Manual Update" or not (instance and playlist):
+            raise CommandError(
+                "last display was a one-off update with no saved instance; "
+                "pick a playlist entry instead"
+            )
+        if not plugin_id:
+            raise CommandError("refresh metadata is missing plugin_id")
+
         return self._bridge_result(self.bridge.post_json(
             "/display_plugin_instance",
-            payload={"playlist_name": playlist, "plugin_id": plugin_id, "plugin_instance": last},
+            payload={
+                "playlist_name": playlist,
+                "plugin_id": plugin_id,
+                "plugin_instance": instance,
+            },
         ))
 
     def _op_reboot(self, _data: dict) -> Any:
