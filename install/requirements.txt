@@ -17,6 +17,8 @@ waitress==3.0.2
 feedparser==6.0.11
 astral>=3.1
 # BLE peripheral + HTTP bridge (inkypi-ble.service)
-bless==0.2.6
-dbus-fast==2.21.3
+# bless 0.3.0+ supports bleak 1.x+ (older 0.2.x imports a module that was
+# removed when bleak restructured its bluezdbus backend).
+bless>=0.3.0
+dbus-fast>=2.21.3
 httpx==0.27.2
