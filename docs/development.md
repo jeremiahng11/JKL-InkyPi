@@ -20,7 +20,7 @@ Traditional setup method
 ```bash
 # 1. Clone and setup
 git clone https://github.com/jeremiahng11/JKL-InkyPi.git
-cd InkyPi
+cd JKL-InkyPi
 
 # 2. Create virtual environment
 python3 -m venv venv
@@ -47,7 +47,7 @@ command -v direnv >/dev/null || nix profile install "nixpkgs#direnv" \
 
 # 2. Clone and setup
 git clone https://github.com/jeremiahng11/JKL-InkyPi.git
-cd InkyPi # direnv reads .envrc -> runs devbox shell -> installs deps & activates venv
+cd JKL-InkyPi # direnv reads .envrc -> runs devbox shell -> installs deps & activates venv
 
 # 3. Run InkyPi in developer mode via devbox
 devbox run dev # alternatively run `devbox shell` and then run `python src/inkypi.py --dev`

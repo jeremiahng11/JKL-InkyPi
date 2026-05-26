@@ -110,7 +110,7 @@ To install InkyPi, follow these steps:
     ```
 2. Navigate to the project directory:
     ```bash
-    cd InkyPi
+    cd JKL-InkyPi
     ```
 3. Run the installation script with sudo:
     ```bash
@@ -152,7 +152,7 @@ For more details, including instructions on how to image your microSD with Raspb
 To update your InkyPi with the latest code changes, follow these steps:
 1. Navigate to the project directory:
     ```bash
-    cd InkyPi
+    cd JKL-InkyPi
     ```
 2. Fetch the latest changes from the repository:
     ```bash

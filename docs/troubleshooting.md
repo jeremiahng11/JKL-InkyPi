@@ -133,7 +133,7 @@ InkyPi/src/display/waveshare_epd/
 
 For example, to copy the driver and epdconfig files for epd13in3E (Waveshare Spectra 6 (E6) Full Color 13.3 inch display):
 ```bash
-cd InkyPi/src/display/waveshare_epd/
+cd JKL-InkyPi/src/display/waveshare_epd/
 curl -L -O https://raw.githubusercontent.com/waveshareteam/e-Paper/refs/heads/master/E-paper_Separate_Program/13.3inch_e-Paper_E/RaspberryPi/python/lib/epd13in3E.py
 curl -L -O https://raw.githubusercontent.com/waveshareteam/e-Paper/refs/heads/master/E-paper_Separate_Program/13.3inch_e-Paper_E/RaspberryPi/python/lib/epdconfig.py
 ```
