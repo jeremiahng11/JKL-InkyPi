@@ -290,8 +290,39 @@ install_executable() {
 
 enable_bluetooth() {
   echo "Enabling and starting bluetooth service for BLE peripheral."
+
+  # 1. Some Pi OS images soft-block the Bluetooth radio via rfkill by default
+  #    (state: 'off-blocked'). Without this, bluetoothctl/BlueZ silently
+  #    refuses to power the adapter on and our BLE advertisement
+  #    registration fails with: "Failed to register advertisement".
+  if command -v rfkill >/dev/null 2>&1; then
+    sudo rfkill unblock bluetooth 2>/dev/null || true
+  fi
+
+  # 2. Set AutoEnable=true in /etc/bluetooth/main.conf so the adapter
+  #    powers on automatically every boot. Without this BlueZ accepts the
+  #    daemon start but leaves the controller in 'Powered: no' until
+  #    something explicitly runs `bluetoothctl power on`.
+  local main_conf="/etc/bluetooth/main.conf"
+  if [ -f "$main_conf" ]; then
+    if grep -qE '^[[:space:]]*AutoEnable[[:space:]]*=' "$main_conf"; then
+      sudo sed -i -E 's|^[[:space:]]*AutoEnable[[:space:]]*=.*|AutoEnable=true|' "$main_conf"
+    elif grep -qE '^[[:space:]]*\[Policy\]' "$main_conf"; then
+      sudo sed -i -E '/^[[:space:]]*\[Policy\]/a AutoEnable=true' "$main_conf"
+    else
+      printf '\n[Policy]\nAutoEnable=true\n' | sudo tee -a "$main_conf" > /dev/null
+    fi
+    echo_success "\tBlueZ AutoEnable enabled in $main_conf"
+  fi
+
   sudo systemctl enable bluetooth > /dev/null
-  sudo systemctl start bluetooth > /dev/null
+  sudo systemctl restart bluetooth > /dev/null
+  sleep 1
+
+  # 3. Kick the adapter on now so inkypi-ble can advertise without waiting
+  #    for the next reboot or relying on its own restart-on-failure loop.
+  sudo bluetoothctl power on > /dev/null 2>&1 || true
+  echo_success "\tBluetooth service enabled and adapter powered on"
 }
 
 install_config() {
