@@ -149,17 +149,24 @@ show_loader() {
   local delay=0.1
   local spinstr='|/-\'
   printf "$1 [${spinstr:0:1}] "
-  while ps a | awk '{print $1}' | grep -q "${pid}"; do
+  while kill -0 "${pid}" 2>/dev/null; do
     local temp=${spinstr#?}
     printf "\r$1 [${temp:0:1}] "
     spinstr=${temp}${spinstr%"${temp}"}
     sleep ${delay}
   done
-  if [[ $? -eq 0 ]]; then
+  # Reap the backgrounded process and propagate its actual exit code.
+  # The original implementation checked $? after the spinner loop, which
+  # always evaluated to the exit code of `sleep` (i.e. 0) — meaning ✔ was
+  # printed even when pip / apt failed. wait gives us the real status.
+  wait "${pid}" 2>/dev/null
+  local exit_code=$?
+  if [[ $exit_code -eq 0 ]]; then
     printf "\r$1 [\e[32m\xE2\x9C\x94\e[0m]\n"
   else
     printf "\r$1 [\e[31m\xE2\x9C\x98\e[0m]\n"
   fi
+  return $exit_code
 }
 
 echo_success() {
@@ -185,17 +192,21 @@ echo_blue() {
 
 install_debian_dependencies() {
   if [ -f "$APT_REQUIREMENTS_FILE" ]; then
-    sudo apt-get update > /dev/null &
-    show_loader "Fetch available system dependencies updates. "
+    local apt_log="/tmp/inkypi-apt.log"
+
+    sudo apt-get update > "$apt_log" 2>&1 &
+    show_loader "Fetch available system dependencies updates. " \
+      || { echo_error "apt-get update failed; see $apt_log"; tail -20 "$apt_log" >&2; exit 1; }
 
     # Strip comment lines (#…) and blank lines before handing the package
     # list to apt — xargs itself doesn't understand requirements-file
     # comment syntax, so we filter them out first.
     grep -vE '^[[:space:]]*(#|$)' "$APT_REQUIREMENTS_FILE" \
-      | xargs sudo apt-get install -y > /dev/null &
-    show_loader "Installing system dependencies. "
+      | xargs sudo apt-get install -y > "$apt_log" 2>&1 &
+    show_loader "Installing system dependencies. " \
+      || { echo_error "apt-get install failed; see $apt_log"; tail -20 "$apt_log" >&2; exit 1; }
   else
-    echo "ERROR: System dependencies file $APT_REQUIREMENTS_FILE not found!"
+    echo_error "System dependencies file $APT_REQUIREMENTS_FILE not found!"
     exit 1
   fi
 }
@@ -215,18 +226,25 @@ setup_earlyoom_service() {
 
 create_venv(){
   echo "Creating python virtual environment. "
-  python3 -m venv "$VENV_PATH"
-  $VENV_PATH/bin/python -m pip install --upgrade pip setuptools wheel > /dev/null
-  $VENV_PATH/bin/python -m pip install -r $PIP_REQUIREMENTS_FILE -qq > /dev/null &
-  show_loader "\tInstalling python dependencies. "
+  python3 -m venv "$VENV_PATH" || { echo_error "venv creation failed"; exit 1; }
+
+  local pip_log="/tmp/inkypi-pip.log"
+  : > "$pip_log"
+
+  $VENV_PATH/bin/python -m pip install --upgrade pip setuptools wheel >> "$pip_log" 2>&1 \
+    || { echo_error "pip toolchain upgrade failed; see $pip_log"; tail -20 "$pip_log" >&2; exit 1; }
+
+  $VENV_PATH/bin/python -m pip install -r $PIP_REQUIREMENTS_FILE -qq >> "$pip_log" 2>&1 &
+  show_loader "\tInstalling python dependencies. " \
+    || { echo_error "pip install -r requirements.txt failed; see $pip_log"; tail -20 "$pip_log" >&2; exit 1; }
 
   # do additional dependencies for Waveshare support.
   if [[ -n "$WS_TYPE" ]]; then
     echo "Adding additional dependencies for waveshare to the python virtual environment. "
-    $VENV_PATH/bin/python -m pip install -r $WS_REQUIREMENTS_FILE > ws_pip_install.log &
-    show_loader "\tInstalling additional Waveshare python dependencies. "
+    $VENV_PATH/bin/python -m pip install -r $WS_REQUIREMENTS_FILE >> "$pip_log" 2>&1 &
+    show_loader "\tInstalling additional Waveshare python dependencies. " \
+      || { echo_error "Waveshare pip install failed; see $pip_log"; tail -20 "$pip_log" >&2; exit 1; }
   fi
-
 }
 
 install_app_service() {

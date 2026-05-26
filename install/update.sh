@@ -77,14 +77,18 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-apt-get update -y > /dev/null &
+APT_LOG="/tmp/inkypi-update-apt.log"
+apt-get update -y > "$APT_LOG" 2>&1 \
+  || { echo_error "apt-get update failed; see $APT_LOG"; tail -20 "$APT_LOG" >&2; exit 1; }
+
 if [ -f "$APT_REQUIREMENTS_FILE" ]; then
   echo "Installing system dependencies... "
   # Strip comment / blank lines before handing the package list to apt
   # (xargs doesn't understand requirements-file comment syntax).
   grep -vE '^[[:space:]]*(#|$)' "$APT_REQUIREMENTS_FILE" \
-    | xargs sudo apt-get install -y > /dev/null \
-    && echo_success "Installed system dependencies."
+    | xargs sudo apt-get install -y > "$APT_LOG" 2>&1 \
+    || { echo_error "apt-get install failed; see $APT_LOG"; tail -20 "$APT_LOG" >&2; exit 1; }
+  echo_success "Installed system dependencies."
 else
   echo_error "ERROR: System dependencies file $APT_REQUIREMENTS_FILE not found!"
   exit 1
@@ -109,13 +113,19 @@ fi
 source "$VENV_PATH/bin/activate"
 
 # Upgrade pip
+PIP_LOG="/tmp/inkypi-update-pip.log"
+: > "$PIP_LOG"
 echo "Upgrading pip..."
-$VENV_PATH/bin/python -m pip install --upgrade pip setuptools wheel > /dev/null && echo_success "Pip upgraded successfully."
+$VENV_PATH/bin/python -m pip install --upgrade pip setuptools wheel >> "$PIP_LOG" 2>&1 \
+  || { echo_error "Pip toolchain upgrade failed; see $PIP_LOG"; tail -20 "$PIP_LOG" >&2; exit 1; }
+echo_success "Pip upgraded successfully."
 
 # Install or update Python dependencies
 if [ -f "$PIP_REQUIREMENTS_FILE" ]; then
   echo "Updating Python dependencies..."
-  $VENV_PATH/bin/python -m pip install --upgrade -r "$PIP_REQUIREMENTS_FILE" -qq > /dev/null && echo_success "Dependencies updated successfully."
+  $VENV_PATH/bin/python -m pip install --upgrade -r "$PIP_REQUIREMENTS_FILE" -qq >> "$PIP_LOG" 2>&1 \
+    || { echo_error "Dependency update failed; see $PIP_LOG"; tail -20 "$PIP_LOG" >&2; exit 1; }
+  echo_success "Dependencies updated successfully."
 else
   echo_error "ERROR: Requirements file $PIP_REQUIREMENTS_FILE not found!"
   exit 1
