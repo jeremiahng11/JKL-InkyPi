@@ -58,6 +58,29 @@ def save_plugin_order():
     return jsonify({"success": True})
 
 
+@main_bp.route('/api/system_stats')
+def get_system_stats():
+    """Lightweight system snapshot for the companion app's dashboard card.
+
+    Returns CPU %, memory %, disk %, 1/5/15 min load averages, and the
+    Pi's uptime in seconds. Cheap enough to poll every few seconds.
+    """
+    try:
+        import psutil
+        load = os.getloadavg()
+        boot_time = psutil.boot_time()
+        from time import time as _time
+        return jsonify({
+            "cpu_percent":    psutil.cpu_percent(interval=0),
+            "memory_percent": psutil.virtual_memory().percent,
+            "disk_percent":   psutil.disk_usage('/').percent,
+            "load_avg":       list(load),
+            "uptime_seconds": int(_time() - boot_time),
+        })
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
 @main_bp.route('/api/state')
 def get_state():
     """JSON snapshot of device state for the companion app's HTTP fast path.
