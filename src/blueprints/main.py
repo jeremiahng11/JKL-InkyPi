@@ -58,6 +58,86 @@ def save_plugin_order():
     return jsonify({"success": True})
 
 
+@main_bp.route('/api/updates/check')
+def api_updates_check():
+    """Probe the git working tree for available updates.
+
+    Runs `git fetch` against the configured remote (no merge), then
+    counts commits the local HEAD is behind upstream by and returns
+    them as a short changelog. Read-only — does not apply anything.
+
+    The companion app polls this from its Updates screen so users can
+    see "you're 3 commits behind" without SSHing in.
+
+    Returns {available: bool, behind: int, current_short, upstream_short,
+             changelog: [str], error: str?}.
+    """
+    import subprocess
+
+    # The Flask process runs from `/usr/local/inkypi/src` which is a
+    # symlink to the actual source checkout. Resolve to the real path
+    # so we run git from inside the cloned working tree.
+    src_dir = os.path.realpath(os.path.dirname(os.path.dirname(__file__)))
+    repo_root = os.path.dirname(src_dir)
+
+    def _git(*args, timeout=15):
+        return subprocess.run(
+            ['git', '-C', repo_root, *args],
+            capture_output=True, text=True, timeout=timeout,
+        )
+
+    try:
+        # If this isn't a git checkout at all, return a clear "unknown"
+        # state rather than a 500.
+        check = _git('rev-parse', '--is-inside-work-tree', timeout=3)
+        if check.returncode != 0:
+            return jsonify({
+                "available": False,
+                "behind": 0,
+                "error": "Pi source is not a git checkout — update check not supported",
+            })
+
+        # Best-effort fetch; ignore failure (offline, auth, etc.) and
+        # fall back to whatever cached refs we already have.
+        _git('fetch', '--quiet', timeout=20)
+
+        head = _git('rev-parse', '--short', 'HEAD').stdout.strip()
+        head_full = _git('rev-parse', 'HEAD').stdout.strip()
+        upstream_check = _git('rev-parse', '--symbolic-full-name', '@{u}', timeout=3)
+        if upstream_check.returncode != 0:
+            return jsonify({
+                "available": False,
+                "behind": 0,
+                "current_short": head,
+                "error": "No upstream branch is tracked — can't check for updates",
+            })
+
+        upstream = _git('rev-parse', '--short', '@{u}').stdout.strip()
+        upstream_full = _git('rev-parse', '@{u}').stdout.strip()
+        behind_out = _git('rev-list', '--count', f'{head_full}..{upstream_full}').stdout.strip()
+        behind = int(behind_out or '0')
+
+        changelog = []
+        if behind > 0:
+            log = _git(
+                'log', '--oneline', '--no-decorate', '-n', '20',
+                f'{head_full}..{upstream_full}',
+            ).stdout.strip()
+            changelog = [line for line in log.splitlines() if line]
+
+        return jsonify({
+            "available": behind > 0,
+            "behind": behind,
+            "current_short": head,
+            "upstream_short": upstream,
+            "changelog": changelog,
+        })
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "git command timed out", "available": False, "behind": 0}), 504
+    except Exception as e:
+        return jsonify({"error": str(e), "available": False, "behind": 0}), 500
+
+
 @main_bp.route('/api/about')
 def api_about():
     """Pi-side identity + health snapshot for the companion app's

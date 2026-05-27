@@ -1,0 +1,28 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install test deps
+        # Production deps (Flask, bless, dbus-fast, …) are Pi-only and would
+        # fail to install on a generic Ubuntu runner. The tests only exercise
+        # pure-Python modules (model, ble.framing, ble.handlers.*), so the
+        # minimum we need is pytest + httpx for the bridge mock.
+        run: pip install pytest httpx
+
+      - name: Run pytest
+        run: pytest tests/ -q
