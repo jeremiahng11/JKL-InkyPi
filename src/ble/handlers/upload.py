@@ -179,8 +179,13 @@ class UploadHandler:
         ``/add_plugin`` (matching the web UI's "add plugin instance" flow);
         otherwise we go straight to ``/update_now`` which pushes the image to
         the display immediately without persisting it.
+
+        The image_upload plugin expects the multipart field to be named
+        ``imageFiles[]`` (its template uploads multiple files at once); using
+        plain ``image`` triggers a "No images provided" failure inside the
+        plugin even though Flask accepted the upload.
         """
-        files = {"image": (upload.name, body, "application/octet-stream")}
+        files = {"imageFiles[]": (upload.name, body, "application/octet-stream")}
 
         if upload.playlist and upload.instance_name:
             refresh_settings = json.dumps({
