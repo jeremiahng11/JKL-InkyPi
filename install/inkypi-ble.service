@@ -6,8 +6,14 @@ Wants=bluetooth.service
 [Service]
 User=root
 ExecStart=/usr/local/bin/inkypi-ble
-Restart=on-failure
-RestartSec=10
+# Watchdog inside service.py self-stops if BlueZ has dropped our
+# advertisement (bless 0.3.0 can lose it silently on a central
+# disconnect). Restart=always means a clean exit triggered by that
+# self-stop still bounces the service so advertising is restored
+# within ~5s. systemctl stop still works — systemd treats explicit
+# stop requests separately from auto-restart.
+Restart=always
+RestartSec=5
 KillSignal=SIGINT
 StandardOutput=journal
 StandardError=journal

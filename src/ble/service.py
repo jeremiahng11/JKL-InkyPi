@@ -34,7 +34,11 @@ CONFIG_FILE = os.environ.get(
 )
 LOGGING_CONF = os.path.join(os.path.dirname(__file__), "..", "config", "logging.conf")
 
-INFO_REFRESH_INTERVAL = 15.0   # seconds
+INFO_REFRESH_INTERVAL = 15.0       # seconds
+ADV_WATCHDOG_INTERVAL = 30.0       # seconds — how often to verify BlueZ
+                                   # still has our advertisement registered.
+                                   # bless 0.3.0 silently loses advertising
+                                   # state on some central disconnects.
 
 
 class _BlessUnavailable(RuntimeError):
@@ -123,15 +127,24 @@ class BleService:
 
         self._stop_event = asyncio.Event()
         info_task = asyncio.create_task(self._info_refresher())
+        watchdog_task = asyncio.create_task(self._advertisement_watchdog())
         try:
             await self._stop_event.wait()
         finally:
-            info_task.cancel()
+            for task in (info_task, watchdog_task):
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            # bless's server.stop() calls UnregisterAdvertisement which
+            # raises DBusError("Does Not Exist") if BlueZ has already
+            # dropped the advertisement (e.g. after an Android disconnect).
+            # Swallow it — we're shutting down anyway.
             try:
-                await info_task
-            except asyncio.CancelledError:
-                pass
-            await self.server.stop()
+                await self.server.stop()
+            except Exception as exc:
+                logger.warning("server.stop() raised %s — likely already torn down", exc)
             self.bridge.close()
             logger.info("BLE peripheral stopped")
 
@@ -216,6 +229,59 @@ class BleService:
                 raise
             except Exception:
                 logger.exception("INFO refresh failed")
+
+    async def _advertisement_watchdog(self) -> None:
+        """Detect when BlueZ has dropped our advertisement and trigger a
+        self-restart so systemd brings us back cleanly.
+
+        bless 0.3.0 / BlueZ silently unregister the advertisement on some
+        central disconnects (force-stop, out of range, screen off). The
+        Python process keeps running but the radio is silent — neither
+        nRF Connect nor our app can find the Pi until something restarts
+        the service.
+        """
+        while True:
+            try:
+                await asyncio.sleep(ADV_WATCHDOG_INTERVAL)
+                if not await self._advertising_active():
+                    logger.warning(
+                        "Advertisement no longer active — requesting stop so "
+                        "systemd restarts the service"
+                    )
+                    self.request_stop()
+                    return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Advertisement watchdog tick failed")
+
+    @staticmethod
+    async def _advertising_active() -> bool:
+        """Returns True if BlueZ reports at least one active LE
+        advertisement instance on the controller. Uses bluetoothctl
+        rather than dbus-fast directly to keep the dependency surface
+        small — the call is ~50ms on a Pi Zero 2 W."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "bluetoothctl", "show",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await proc.communicate()
+        except FileNotFoundError:
+            # bluetoothctl missing — can't verify, assume OK to avoid loops
+            return True
+        for raw in stdout.decode("utf-8", errors="replace").splitlines():
+            line = raw.strip()
+            if line.startswith("ActiveInstances:"):
+                token = line.split(":", 1)[1].strip().split()[0]
+                try:
+                    return int(token, 0) > 0
+                except ValueError:
+                    return False
+        # ActiveInstances missing from output — assume OK rather than
+        # restart-looping when bluetoothctl format changes.
+        return True
 
     # --------------------------------------------------------------- helpers
 
