@@ -56,3 +56,39 @@ def save_plugin_order():
     device_config.set_plugin_order(order)
 
     return jsonify({"success": True})
+
+
+@main_bp.route('/api/state')
+def get_state():
+    """JSON snapshot of device state for the companion app's HTTP fast path.
+
+    The companion app uses BLE for control commands when only Bluetooth is
+    available, but switches to HTTP for everything when both phone and Pi
+    are on the same network — BLE on the Pi Zero 2 W is fragile and slow.
+    This endpoint exposes the read-only subset the app needs (plugins,
+    playlists, settings, refresh state) without leaking secrets or
+    duplicating the entire device.json schema.
+    """
+    device_config = current_app.config['DEVICE_CONFIG']
+    playlist_manager = device_config.get_playlist_manager()
+    refresh_info = device_config.get_refresh_info()
+    plugins = device_config.get_plugins()
+    cfg = device_config.get_config()
+
+    return jsonify({
+        "name":          cfg.get("name"),
+        "version":       cfg.get("version", "1.0.0"),
+        "resolution":    cfg.get("resolution"),
+        "orientation":   cfg.get("orientation"),
+        "display_type":  cfg.get("display_type"),
+        "timezone":      cfg.get("timezone"),
+        "time_format":   cfg.get("time_format"),
+        "plugin_cycle_interval_seconds": cfg.get("plugin_cycle_interval_seconds"),
+        "image_settings":  cfg.get("image_settings", {}),
+        "inverted_image":  cfg.get("inverted_image"),
+        "log_system_stats": cfg.get("log_system_stats"),
+        "plugins":        plugins,
+        "plugin_order":   cfg.get("plugin_order", []),
+        "playlist_config": playlist_manager.to_dict(),
+        "refresh_info":   refresh_info.to_dict(),
+    })
