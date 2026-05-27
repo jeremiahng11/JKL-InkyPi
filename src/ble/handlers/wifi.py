@@ -29,6 +29,7 @@ class WifiHandler:
             "connect":    self._op_connect,
             "forget":     self._op_forget,
             "status":     self._op_status,
+            "list_saved": self._op_list_saved,
             "ap_enable":  self._op_ap_enable,
             "ap_disable": self._op_ap_disable,
         }
@@ -74,6 +75,9 @@ class WifiHandler:
 
     def _op_status(self, _data: dict) -> Any:
         return wifi.current_status().to_dict()
+
+    def _op_list_saved(self, _data: dict) -> Any:
+        return {"ssids": wifi.list_saved()}
 
     def _op_ap_enable(self, _data: dict) -> Any:
         cfg = self._get_hotspot_config()

@@ -299,30 +299,41 @@ enable_bluetooth() {
     sudo rfkill unblock bluetooth 2>/dev/null || true
   fi
 
-  # 2. Set AutoEnable=true in /etc/bluetooth/main.conf so the adapter
-  #    powers on automatically every boot. Without this BlueZ accepts the
-  #    daemon start but leaves the controller in 'Powered: no' until
-  #    something explicitly runs `bluetoothctl power on`.
+  # 2. Write BlueZ config tweaks to /etc/bluetooth/main.conf:
+  #      - AutoEnable=true  →  power adapter on at every boot
+  #      - Pairable=false   →  refuse incoming pair requests, so Android
+  #                            doesn't pop a pairing dialog every time
+  #                            the companion app connects. The v1 BLE
+  #                            protocol is open by design (see
+  #                            docs/bluetooth.md#security-v1); we don't
+  #                            depend on bonding for any operation.
   local main_conf="/etc/bluetooth/main.conf"
   if [ -f "$main_conf" ]; then
-    if grep -qE '^[[:space:]]*AutoEnable[[:space:]]*=' "$main_conf"; then
-      sudo sed -i -E 's|^[[:space:]]*AutoEnable[[:space:]]*=.*|AutoEnable=true|' "$main_conf"
-    elif grep -qE '^[[:space:]]*\[Policy\]' "$main_conf"; then
-      sudo sed -i -E '/^[[:space:]]*\[Policy\]/a AutoEnable=true' "$main_conf"
-    else
-      printf '\n[Policy]\nAutoEnable=true\n' | sudo tee -a "$main_conf" > /dev/null
-    fi
-    echo_success "\tBlueZ AutoEnable enabled in $main_conf"
+    _bluez_set_kv() {
+      local key="$1" value="$2" section="$3" path="$main_conf"
+      if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$path"; then
+        sudo sed -i -E "s|^[[:space:]]*${key}[[:space:]]*=.*|${key}=${value}|" "$path"
+      elif grep -qE "^[[:space:]]*\[${section}\]" "$path"; then
+        sudo sed -i -E "/^[[:space:]]*\[${section}\]/a ${key}=${value}" "$path"
+      else
+        printf '\n[%s]\n%s=%s\n' "$section" "$key" "$value" | sudo tee -a "$path" > /dev/null
+      fi
+    }
+    _bluez_set_kv AutoEnable true Policy
+    _bluez_set_kv Pairable    false General
+    echo_success "\tBlueZ config applied: AutoEnable=true, Pairable=false"
   fi
 
   sudo systemctl enable bluetooth > /dev/null
   sudo systemctl restart bluetooth > /dev/null
   sleep 1
 
-  # 3. Kick the adapter on now so inkypi-ble can advertise without waiting
-  #    for the next reboot or relying on its own restart-on-failure loop.
+  # 3. Kick the adapter on + disable pairability so the config above takes
+  #    effect immediately, without waiting for a reboot or for inkypi-ble's
+  #    own restart-on-failure loop.
   sudo bluetoothctl power on > /dev/null 2>&1 || true
-  echo_success "\tBluetooth service enabled and adapter powered on"
+  sudo bluetoothctl pairable off > /dev/null 2>&1 || true
+  echo_success "\tBluetooth service enabled, adapter powered on, pairing disabled"
 }
 
 install_config() {

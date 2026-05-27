@@ -207,6 +207,19 @@ Removes the saved connection profile.
 
 Returns the same `wifi`/`ap` block as INFO.
 
+### `op: "list_saved"`
+
+Returns the SSIDs of every saved Wi-Fi profile (excluding the AP fallback).
+
+Request:
+```json
+{ "id": "5", "op": "list_saved" }
+```
+Response:
+```json
+{ "id": "5", "status": "ok", "data": { "ssids": ["Home", "Cafe Free"] } }
+```
+
 ### `op: "ap_enable"` / `op: "ap_disable"`
 
 Manually toggles the access-point fallback. Normally `inkypi-netd.service`

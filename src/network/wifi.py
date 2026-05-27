@@ -98,6 +98,28 @@ def forget(ssid: str) -> None:
     run(["con", "delete", ssid], check=False)
 
 
+def list_saved() -> list[str]:
+    """Return SSIDs of every saved Wi-Fi connection profile.
+
+    NetworkManager stores profile NAMEs that for wifi-type connections
+    default to the SSID (matching what ``connect`` produced). The AP
+    fallback profile (``InkyPi-AP``) is excluded since the user manages
+    it elsewhere.
+    """
+    rows = terse(["con", "show"], fields=["NAME", "TYPE"], check=False)
+    ssids: list[str] = []
+    for row in rows:
+        if len(row) < 2:
+            continue
+        name, conn_type = row[0], row[1]
+        if conn_type != "802-11-wireless":
+            continue
+        if name == "InkyPi-AP":
+            continue
+        ssids.append(name)
+    return ssids
+
+
 def current_status() -> WifiStatus:
     """Probe NetworkManager for the current Wi-Fi state on ``wlan0``."""
     rows = terse(
