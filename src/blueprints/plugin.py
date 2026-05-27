@@ -301,6 +301,86 @@ def remove_image_from_instance():
     return jsonify({"success": True, "remaining": len(images)})
 
 
+@plugin_bp.route('/api/add_instance', methods=['POST'])
+def api_add_instance():
+    """JSON-friendly companion-app variant of /add_plugin for non-file
+    plugins.
+
+    Body:
+      {
+        playlist_name:   str,
+        plugin_id:       str,
+        plugin_instance: str,             # new instance name
+        plugin_settings: dict | None,     # arbitrary plugin settings
+        refresh:         dict | None,     # {interval, unit} or {scheduled}
+      }
+
+    The existing /add_plugin handler is multipart-form-encoded because
+    it also accepts file uploads (image_upload). For plugins that don't
+    need files (Clock, Year Progress, RSS, AI text, etc.) the form
+    handling is overkill — pure JSON is simpler for the Flutter client.
+    Plugins that require uploaded files (image_upload primarily) should
+    keep using /add_plugin via the upload screen's multipart flow.
+    """
+    device_config = current_app.config['DEVICE_CONFIG']
+    playlist_manager = device_config.get_playlist_manager()
+
+    data = request.get_json() or {}
+    playlist_name = data.get('playlist_name')
+    plugin_id = data.get('plugin_id')
+    instance_name = data.get('plugin_instance')
+    plugin_settings = data.get('plugin_settings') or {}
+    refresh = data.get('refresh') or {}
+
+    if not playlist_name or not plugin_id or not instance_name:
+        return jsonify({
+            "error": "playlist_name, plugin_id, plugin_instance are required"
+        }), 400
+    if not isinstance(plugin_settings, dict):
+        return jsonify({"error": "plugin_settings must be an object"}), 400
+    if not isinstance(refresh, dict):
+        return jsonify({"error": "refresh must be an object"}), 400
+    if not instance_name.strip():
+        return jsonify({"error": "plugin_instance cannot be blank"}), 400
+    if not all(c.isalnum() or c.isspace() for c in instance_name):
+        return jsonify({
+            "error": "Instance name can only contain alphanumeric and spaces"
+        }), 400
+
+    playlist = playlist_manager.get_playlist(playlist_name)
+    if not playlist:
+        return jsonify({"error": f"Playlist '{playlist_name}' not found"}), 404
+    if playlist.find_plugin(plugin_id, instance_name):
+        return jsonify({
+            "error": f"Instance '{instance_name}' already exists in '{playlist_name}'"
+        }), 400
+
+    # Refresh defaults to 1-hour interval if the caller didn't specify.
+    if 'interval' in refresh and 'unit' in refresh:
+        from utils.time_utils import calculate_seconds
+        try:
+            seconds = calculate_seconds(int(refresh['interval']), refresh['unit'])
+        except (ValueError, TypeError):
+            return jsonify({"error": "refresh.interval / refresh.unit invalid"}), 400
+        refresh_config = {"interval": seconds}
+    elif 'scheduled' in refresh:
+        refresh_config = {"scheduled": refresh['scheduled']}
+    else:
+        refresh_config = {"interval": 3600}
+
+    plugin_dict = {
+        "plugin_id": plugin_id,
+        "refresh": refresh_config,
+        "plugin_settings": plugin_settings,
+        "name": instance_name.strip(),
+    }
+    if not playlist_manager.add_plugin_to_playlist(playlist_name, plugin_dict):
+        return jsonify({"error": "Failed to add plugin to playlist"}), 500
+
+    device_config.write_config()
+    return jsonify({"success": True})
+
+
 @plugin_bp.route('/api/update_instance', methods=['POST'])
 def api_update_instance():
     """JSON-friendly companion-app variant of /update_plugin_instance.
