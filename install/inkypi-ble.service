@@ -5,6 +5,16 @@ Wants=bluetooth.service
 
 [Service]
 User=root
+# Power on the adapter and enable pairability at every service start.
+# This makes the JustWorks pairing fix idempotent across upgrades —
+# existing installs that still have Pairable=false in main.conf get
+# overridden each time the service starts, so users don't need to
+# re-run install.sh. The persistent NoInputNoOutput agent is
+# registered in-process by ble/pairing_agent.py — putting it here
+# wouldn't persist because bluetoothctl drops the agent on exit.
+ExecStartPre=-/usr/bin/bluetoothctl power on
+ExecStartPre=-/usr/bin/bluetoothctl pairable on
+ExecStartPre=-/usr/bin/bluetoothctl discoverable on
 ExecStart=/usr/local/bin/inkypi-ble
 # Watchdog inside service.py self-stops if BlueZ has dropped our
 # advertisement (bless 0.3.0 can lose it silently on a central

@@ -299,12 +299,22 @@ time. The peripheral drops the partial buffer.
 
 ## Security (v1)
 
-- **No pairing required.** Anyone within Bluetooth range can connect. This
-  matches the current web UI's threat model (open HTTP on the LAN).
-- The hotspot mode generates an 8-character WPA2 password at first boot and
-  stores it in `device.json`. The current password is included in the INFO
-  payload, so a paired-once client knows it.
-- A future version will add an optional PIN-based bonding flow. Track in
+- **JustWorks pairing, silent.** The Pi accepts incoming bond requests
+  from any central via a `NoInputNoOutput` agent
+  (`src/ble/pairing_agent.py`). No PIN, no confirmation UI on the Pi.
+  Android may show a one-time "Pair?" prompt on first connect; tapping
+  Pair completes the bond and Android remembers the device, so the
+  prompt does not return on later connects.
+- **No characteristic-level encryption requirement.** All GATT
+  characteristics use plain `readable` / `writeable` permissions, so a
+  client that *declined* bonding can still talk to the Pi. Pairing
+  exists purely to keep Android from re-prompting the user, not as a
+  security gate. The protocol's actual threat model matches the web
+  UI's: open access on the local network.
+- The hotspot mode generates an 8-character WPA2 password at first boot
+  and stores it in `device.json`. The current password is included in
+  the INFO payload, so a paired-once client knows it.
+- A future version will gate writes behind a PIN-based bond. Track in
   GitHub issues.
 
 ---

@@ -24,6 +24,7 @@ from ble.bridge import FlaskBridge
 from ble.gatt import ASSUMED_MTU, CHAR_UUIDS, SERVICE_UUID
 from ble.handlers import CommandHandler, UploadHandler, WifiHandler
 from ble.info import build_info
+from ble.pairing_agent import PairingAgent
 from network import hotspot
 
 logger = logging.getLogger("inkypi-ble")
@@ -76,6 +77,7 @@ class BleService:
         self.server = None
         self.mtu = ASSUMED_MTU
         self._stop_event: Optional[asyncio.Event] = None
+        self.pairing_agent = PairingAgent()
 
     # ------------------------------------------------------------- lifecycle
 
@@ -125,6 +127,15 @@ class BleService:
         await self.server.start()
         logger.info("BLE peripheral '%s' advertising service %s", device_name, SERVICE_UUID)
 
+        # Register a JustWorks pairing agent so incoming bond requests
+        # from Android complete silently instead of triggering an endless
+        # "Pair?" dialog loop. Failure is non-fatal — the BLE service
+        # still works without bonding, the user just sees the prompt.
+        try:
+            await self.pairing_agent.start()
+        except Exception:
+            logger.exception("Pairing agent failed to start — pair prompts may recur")
+
         self._stop_event = asyncio.Event()
         info_task = asyncio.create_task(self._info_refresher())
         watchdog_task = asyncio.create_task(self._advertisement_watchdog())
@@ -145,6 +156,10 @@ class BleService:
                 await self.server.stop()
             except Exception as exc:
                 logger.warning("server.stop() raised %s — likely already torn down", exc)
+            try:
+                await self.pairing_agent.stop()
+            except Exception:
+                logger.warning("pairing_agent.stop() raised", exc_info=True)
             self.bridge.close()
             logger.info("BLE peripheral stopped")
 

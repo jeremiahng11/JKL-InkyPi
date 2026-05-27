@@ -301,12 +301,16 @@ enable_bluetooth() {
 
   # 2. Write BlueZ config tweaks to /etc/bluetooth/main.conf:
   #      - AutoEnable=true  →  power adapter on at every boot
-  #      - Pairable=false   →  refuse incoming pair requests, so Android
-  #                            doesn't pop a pairing dialog every time
-  #                            the companion app connects. The v1 BLE
-  #                            protocol is open by design (see
-  #                            docs/bluetooth.md#security-v1); we don't
-  #                            depend on bonding for any operation.
+  #      - JustWorksRepairing=always → silent re-bond if Android forgets
+  #        and reinitiates the pair (avoids a dialog loop)
+  #
+  #    NOTE: We *want* Pairable=true (the BlueZ default). Earlier installs
+  #    set Pairable=false in the mistaken belief it would suppress the
+  #    Android pairing dialog. The opposite happens — Android initiates
+  #    pair on first connect anyway, Pi refuses, Android re-prompts on the
+  #    next connect, and the user is stuck in a loop. The fix is to let
+  #    the bond complete once with JustWorks (no PIN, no UI on the Pi
+  #    side) so Android remembers the device and stops asking.
   local main_conf="/etc/bluetooth/main.conf"
   if [ -f "$main_conf" ]; then
     _bluez_set_kv() {
@@ -319,21 +323,26 @@ enable_bluetooth() {
         printf '\n[%s]\n%s=%s\n' "$section" "$key" "$value" | sudo tee -a "$path" > /dev/null
       fi
     }
-    _bluez_set_kv AutoEnable true Policy
-    _bluez_set_kv Pairable    false General
-    echo_success "\tBlueZ config applied: AutoEnable=true, Pairable=false"
+    _bluez_set_kv AutoEnable           true    Policy
+    _bluez_set_kv Pairable              true    General
+    _bluez_set_kv JustWorksRepairing    always  General
+    echo_success "\tBlueZ config applied: AutoEnable=true, Pairable=true, JustWorksRepairing=always"
   fi
 
   sudo systemctl enable bluetooth > /dev/null
   sudo systemctl restart bluetooth > /dev/null
   sleep 1
 
-  # 3. Kick the adapter on + disable pairability so the config above takes
-  #    effect immediately, without waiting for a reboot or for inkypi-ble's
-  #    own restart-on-failure loop.
-  sudo bluetoothctl power on > /dev/null 2>&1 || true
-  sudo bluetoothctl pairable off > /dev/null 2>&1 || true
-  echo_success "\tBluetooth service enabled, adapter powered on, pairing disabled"
+  # 3. Power on the adapter and enable pairability so the BLE service
+  #    can advertise and accept JustWorks bonds. The persistent
+  #    NoInputNoOutput agent is registered in-process by
+  #    ble/pairing_agent.py when inkypi-ble.service starts — piping
+  #    `agent ...; default-agent` into bluetoothctl here wouldn't
+  #    persist because the agent is destroyed when bluetoothctl exits.
+  sudo bluetoothctl power on        > /dev/null 2>&1 || true
+  sudo bluetoothctl pairable on     > /dev/null 2>&1 || true
+  sudo bluetoothctl discoverable on > /dev/null 2>&1 || true
+  echo_success "\tBluetooth service enabled, adapter powered on, JustWorks pairing enabled"
 }
 
 install_config() {
