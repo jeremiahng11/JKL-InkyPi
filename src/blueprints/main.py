@@ -58,6 +58,45 @@ def save_plugin_order():
     return jsonify({"success": True})
 
 
+@main_bp.route('/api/about')
+def api_about():
+    """Pi-side identity + health snapshot for the companion app's
+    About screen. Reads cheap signals (no shell-outs for things psutil
+    can answer), and uses systemctl is-active for service health.
+    """
+    import platform
+    import subprocess
+
+    def _service_state(name):
+        try:
+            r = subprocess.run(
+                ['systemctl', 'is-active', name],
+                capture_output=True, text=True, timeout=2,
+            )
+            return r.stdout.strip() or 'unknown'
+        except Exception:
+            return 'unknown'
+
+    device_config = current_app.config['DEVICE_CONFIG']
+    cfg = device_config.get_config()
+
+    return jsonify({
+        "hostname":       platform.node(),
+        "os":             platform.platform(),
+        "python":         platform.python_version(),
+        "app_name":       "InkyPi (JKL fork)",
+        "app_version":    cfg.get('version', '1.0.0'),
+        "display_type":   cfg.get('display_type'),
+        "resolution":     cfg.get('resolution'),
+        "services": {
+            "inkypi":       _service_state('inkypi'),
+            "inkypi-ble":   _service_state('inkypi-ble'),
+            "inkypi-netd":  _service_state('inkypi-netd'),
+            "bluetooth":    _service_state('bluetooth'),
+        },
+    })
+
+
 @main_bp.route('/api/backup')
 def api_backup():
     """Full device.json snapshot for the companion app's backup feature.
