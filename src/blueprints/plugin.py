@@ -226,6 +226,124 @@ def display_plugin_instance():
 
     return jsonify({"success": True, "message": "Display updated"}), 200
 
+@plugin_bp.route('/api/plugin_image/<path:filename>')
+def get_plugin_image(filename):
+    """Serve a single uploaded image file by basename.
+
+    Used by the companion app's Photos screen to render thumbnails for
+    every image in an image_upload instance (the legacy
+    /plugin_instance_image route only exposes the cached *display*
+    image, which doesn't exist until the instance has been rendered).
+    Security: we strip the path to its basename so this can never
+    escape `device_config.plugin_image_dir`.
+    """
+    device_config = current_app.config['DEVICE_CONFIG']
+    safe_name = os.path.basename(filename)
+    full_path = os.path.join(device_config.plugin_image_dir, safe_name)
+    if not os.path.isfile(full_path):
+        return "Not found", 404
+    return send_from_directory(device_config.plugin_image_dir, safe_name)
+
+
+@plugin_bp.route('/api/remove_image', methods=['POST'])
+def remove_image_from_instance():
+    """Remove a single uploaded image from an image_upload instance.
+
+    Body: { playlist_name, plugin_instance, image_path }
+    plugin_path is the absolute path the Pi stored on disk and is what
+    the instance's imageFiles[] setting references.
+
+    If this drops the last image, the instance is *not* auto-deleted —
+    the caller can decide whether to delete the empty instance (UI
+    typically does, via the existing /delete_plugin_instance handler).
+    """
+    device_config = current_app.config['DEVICE_CONFIG']
+    playlist_manager = device_config.get_playlist_manager()
+
+    data = request.get_json() or {}
+    playlist_name = data.get('playlist_name')
+    plugin_id = data.get('plugin_id', 'image_upload')
+    instance_name = data.get('plugin_instance')
+    image_path = data.get('image_path')
+
+    if not playlist_name or not instance_name or not image_path:
+        return jsonify({
+            "error": "playlist_name, plugin_instance, image_path are required"
+        }), 400
+
+    playlist = playlist_manager.get_playlist(playlist_name)
+    if not playlist:
+        return jsonify({"error": f"Playlist '{playlist_name}' not found"}), 404
+    instance = playlist.find_plugin(plugin_id, instance_name)
+    if not instance:
+        return jsonify({"error": f"Instance '{instance_name}' not found"}), 404
+
+    images = list(instance.settings.get('imageFiles[]', []))
+    if image_path not in images:
+        return jsonify({"error": "image_path is not part of this instance"}), 404
+
+    images.remove(image_path)
+    instance.settings['imageFiles[]'] = images
+    # If the cursor was pointing past the (now shorter) list, reset.
+    idx = instance.settings.get('image_index', 0)
+    if isinstance(idx, int) and idx >= len(images):
+        instance.settings['image_index'] = 0
+
+    # Best-effort delete of the file on disk.
+    if os.path.isfile(image_path):
+        try:
+            os.remove(image_path)
+            logger.info(f"Removed uploaded image: {image_path}")
+        except OSError as e:
+            logger.warning(f"Failed to remove {image_path}: {e}")
+
+    device_config.write_config()
+    return jsonify({"success": True, "remaining": len(images)})
+
+
+@plugin_bp.route('/api/reorder_playlist', methods=['POST'])
+def reorder_playlist():
+    """Replace a playlist's plugin instance order.
+
+    Body: { playlist_name, order: [ {plugin_id, name}, ... ] }
+    """
+    device_config = current_app.config['DEVICE_CONFIG']
+    playlist_manager = device_config.get_playlist_manager()
+
+    data = request.get_json() or {}
+    playlist_name = data.get('playlist_name')
+    order = data.get('order') or []
+
+    if not playlist_name or not isinstance(order, list):
+        return jsonify({"error": "playlist_name and order list required"}), 400
+
+    playlist = playlist_manager.get_playlist(playlist_name)
+    if not playlist:
+        return jsonify({"error": f"Playlist '{playlist_name}' not found"}), 404
+
+    keyed = {}
+    for p in playlist.plugins:
+        keyed[(p.plugin_id, p.name)] = p
+
+    new_list = []
+    for entry in order:
+        if not isinstance(entry, dict):
+            continue
+        key = (entry.get('plugin_id'), entry.get('name'))
+        if key in keyed:
+            new_list.append(keyed.pop(key))
+    # Append anything not mentioned in the order — never drop instances
+    # silently.
+    new_list.extend(keyed.values())
+    playlist.plugins = new_list
+    # Cursor may now point at a different plugin — reset to start so the
+    # next refresh tick re-evaluates rather than jumping mid-list.
+    playlist.current_plugin_index = None
+    device_config.write_config()
+
+    return jsonify({"success": True, "count": len(new_list)})
+
+
 @plugin_bp.route('/update_now', methods=['POST'])
 def update_now():
     device_config = current_app.config['DEVICE_CONFIG']
