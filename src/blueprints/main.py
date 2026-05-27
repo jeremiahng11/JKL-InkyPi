@@ -58,6 +58,66 @@ def save_plugin_order():
     return jsonify({"success": True})
 
 
+@main_bp.route('/api/backup')
+def api_backup():
+    """Full device.json snapshot for the companion app's backup feature.
+
+    Returns everything in the on-disk config (excluding nothing — backups
+    are useless if they don't restore exactly). Hotspot credentials and
+    refresh history are included because the user explicitly asked for a
+    backup; API keys live in the .env file and are NOT part of this
+    payload.
+    """
+    device_config = current_app.config['DEVICE_CONFIG']
+    payload = {
+        "version": 1,
+        "kind": "inkypi-device-config",
+        "config": device_config.get_config(),
+    }
+    return jsonify(payload)
+
+
+@main_bp.route('/api/restore', methods=['POST'])
+def api_restore():
+    """Replace device.json with the posted backup payload.
+
+    Body: {kind: "inkypi-device-config", version: 1, config: {...}}
+
+    Validates the envelope, refuses obvious garbage (missing resolution
+    or playlist_config keys), writes the file atomically via the existing
+    Config.write_config path, and reloads the in-memory playlist /
+    refresh state so the running service uses the new values immediately
+    — no restart needed for most cases.
+    """
+    device_config = current_app.config['DEVICE_CONFIG']
+    refresh_task = current_app.config.get('REFRESH_TASK')
+
+    payload = request.get_json(silent=True) or {}
+    if payload.get('kind') != 'inkypi-device-config':
+        return jsonify({"error": "Backup envelope is missing or invalid"}), 400
+    cfg = payload.get('config')
+    if not isinstance(cfg, dict):
+        return jsonify({"error": "Backup 'config' must be an object"}), 400
+    if 'resolution' not in cfg or 'playlist_config' not in cfg:
+        return jsonify({"error": "Backup is missing required fields"}), 400
+
+    # Swap the in-memory config dict, persist, and rebuild the cached
+    # objects derived from it (playlist manager + refresh info).
+    device_config.config = cfg
+    device_config.write_config()
+    device_config.playlist_manager = device_config.load_playlist_manager()
+    device_config.refresh_info = device_config.load_refresh_info()
+
+    # Nudge the refresh task so the next tick re-reads the new state.
+    if refresh_task is not None:
+        try:
+            refresh_task.signal_config_change()
+        except Exception:
+            pass
+
+    return jsonify({"success": True})
+
+
 @main_bp.route('/api/system_stats')
 def get_system_stats():
     """Lightweight system snapshot for the companion app's dashboard card.
