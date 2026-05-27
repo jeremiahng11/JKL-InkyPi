@@ -301,6 +301,54 @@ def remove_image_from_instance():
     return jsonify({"success": True, "remaining": len(images)})
 
 
+@plugin_bp.route('/api/append_images', methods=['POST'])
+def api_append_images():
+    """Append uploaded image(s) to an existing image_upload instance.
+
+    Multipart form:
+      • playlist_name     (str)
+      • plugin_instance   (str)
+      • imageFiles[]      (one or more file uploads)
+
+    The existing images in instance.settings['imageFiles[]'] are kept
+    and the new file paths are appended, so the user grows the slide
+    show rather than replacing it.
+    """
+    device_config = current_app.config['DEVICE_CONFIG']
+    playlist_manager = device_config.get_playlist_manager()
+
+    playlist_name = request.form.get('playlist_name')
+    instance_name = request.form.get('plugin_instance')
+    plugin_id = request.form.get('plugin_id', 'image_upload')
+
+    if not playlist_name or not instance_name:
+        return jsonify({"error": "playlist_name and plugin_instance required"}), 400
+
+    playlist = playlist_manager.get_playlist(playlist_name)
+    if not playlist:
+        return jsonify({"error": f"Playlist '{playlist_name}' not found"}), 404
+    instance = playlist.find_plugin(plugin_id, instance_name)
+    if not instance:
+        return jsonify({"error": f"Instance '{instance_name}' not found"}), 404
+
+    new_files = handle_request_files(request.files)
+    new_paths = new_files.get('imageFiles[]', [])
+    if not isinstance(new_paths, list):
+        new_paths = [new_paths] if new_paths else []
+    if not new_paths:
+        return jsonify({"error": "no image files uploaded"}), 400
+
+    existing = list(instance.settings.get('imageFiles[]', []))
+    instance.settings['imageFiles[]'] = existing + new_paths
+    device_config.write_config()
+
+    return jsonify({
+        "success": True,
+        "added": len(new_paths),
+        "total_images": len(existing) + len(new_paths),
+    })
+
+
 @plugin_bp.route('/api/add_instance', methods=['POST'])
 def api_add_instance():
     """JSON-friendly companion-app variant of /add_plugin for non-file
@@ -450,6 +498,38 @@ def api_update_instance():
         instance.settings = new_settings
 
     device_config.write_config()
+    return jsonify({"success": True})
+
+
+@plugin_bp.route('/api/refresh_display', methods=['POST'])
+def api_refresh_display():
+    """Re-trigger display of whatever was last shown.
+
+    For the companion app's "refresh display" button. Uses the
+    refresh_info stored in device.json (populated whenever the panel
+    last drew something) to identify the plugin instance and re-run it
+    through the refresh task. If the previous render was a one-off
+    (ManualRefresh) or there's no display history we return 400.
+    """
+    device_config = current_app.config['DEVICE_CONFIG']
+    refresh_task = current_app.config['REFRESH_TASK']
+    refresh_info = device_config.get_refresh_info()
+    playlist_manager = device_config.get_playlist_manager()
+
+    if refresh_info.refresh_type == 'Manual Update' or \
+            not refresh_info.playlist or not refresh_info.plugin_instance:
+        return jsonify({
+            "error": "no playlist-instance to redraw; last display was a one-off"
+        }), 400
+
+    playlist = playlist_manager.get_playlist(refresh_info.playlist)
+    if not playlist:
+        return jsonify({"error": "playlist no longer exists"}), 404
+    instance = playlist.find_plugin(refresh_info.plugin_id, refresh_info.plugin_instance)
+    if not instance:
+        return jsonify({"error": "instance no longer exists"}), 404
+
+    refresh_task.manual_update(PlaylistRefresh(playlist, instance, force=True))
     return jsonify({"success": True})
 
 
