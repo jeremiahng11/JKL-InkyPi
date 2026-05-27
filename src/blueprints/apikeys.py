@@ -56,18 +56,37 @@ def apikeys_page():
     """Render API keys management page."""
     env_path = get_env_path()
     entries = parse_env_file(env_path)
-    
+
     # Prepare entries for template: only key and masked value (no real values for security)
     template_entries = [
         {"key": key, "masked": mask_value(value)}
         for key, value in entries
     ]
-    
+
     return render_template(
         'apikeys.html',
         entries=template_entries,
         env_exists=os.path.exists(env_path)
     )
+
+
+@apikeys_bp.route('/api/api-keys')
+def apikeys_json():
+    """JSON list of stored API keys (masked) for the companion app.
+
+    Same data the HTML page renders, but as JSON so the Flutter client
+    can show + edit keys without scraping the page. Values stay masked —
+    plaintext is never returned by either endpoint.
+    """
+    env_path = get_env_path()
+    entries = parse_env_file(env_path)
+    return jsonify({
+        "env_exists": os.path.exists(env_path),
+        "entries": [
+            {"key": key, "masked": mask_value(value)}
+            for key, value in entries
+        ],
+    })
 
 
 @apikeys_bp.route('/api-keys/save', methods=['POST'])
