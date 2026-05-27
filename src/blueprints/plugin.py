@@ -301,6 +301,78 @@ def remove_image_from_instance():
     return jsonify({"success": True, "remaining": len(images)})
 
 
+@plugin_bp.route('/api/update_instance', methods=['POST'])
+def api_update_instance():
+    """JSON-friendly companion-app variant of /update_plugin_instance.
+
+    Body:
+      {
+        playlist_name:  str,
+        plugin_id:      str,
+        plugin_instance: str,           # current instance name
+        new_name:       str | None,     # rename (optional)
+        plugin_settings: dict | None,   # full replacement settings (optional)
+        refresh:        dict | None,    # {interval, unit} or {scheduled: "HH:MM"}
+      }
+
+    Unspecified fields are left alone. The existing PUT /update_plugin_instance
+    handler is form-only and replaces settings wholesale; this endpoint lets
+    the app modify just the bits it knows about without round-tripping every
+    setting through form encoding (especially awkward for nested values).
+    """
+    device_config = current_app.config['DEVICE_CONFIG']
+    playlist_manager = device_config.get_playlist_manager()
+
+    data = request.get_json() or {}
+    playlist_name = data.get('playlist_name')
+    plugin_id = data.get('plugin_id')
+    instance_name = data.get('plugin_instance')
+    new_name = data.get('new_name')
+    new_settings = data.get('plugin_settings')
+    refresh = data.get('refresh')
+
+    if not playlist_name or not plugin_id or not instance_name:
+        return jsonify({
+            "error": "playlist_name, plugin_id, plugin_instance are required"
+        }), 400
+
+    playlist = playlist_manager.get_playlist(playlist_name)
+    if not playlist:
+        return jsonify({"error": f"Playlist '{playlist_name}' not found"}), 404
+    instance = playlist.find_plugin(plugin_id, instance_name)
+    if not instance:
+        return jsonify({"error": f"Instance '{instance_name}' not found"}), 404
+
+    if isinstance(new_name, str) and new_name.strip() and new_name != instance_name:
+        candidate = new_name.strip()
+        if not all(c.isalnum() or c.isspace() for c in candidate):
+            return jsonify({"error": "Instance name can only contain alphanumeric and spaces"}), 400
+        if playlist.find_plugin(plugin_id, candidate):
+            return jsonify({"error": f"Instance '{candidate}' already exists"}), 400
+        instance.name = candidate
+
+    if refresh is not None:
+        if not isinstance(refresh, dict):
+            return jsonify({"error": "refresh must be an object"}), 400
+        if 'interval' in refresh and 'unit' in refresh:
+            from utils.time_utils import calculate_seconds
+            try:
+                seconds = calculate_seconds(int(refresh['interval']), refresh['unit'])
+            except (ValueError, TypeError):
+                return jsonify({"error": "refresh.interval / refresh.unit invalid"}), 400
+            instance.refresh = {"interval": seconds}
+        elif 'scheduled' in refresh:
+            instance.refresh = {"scheduled": refresh['scheduled']}
+
+    if new_settings is not None:
+        if not isinstance(new_settings, dict):
+            return jsonify({"error": "plugin_settings must be an object"}), 400
+        instance.settings = new_settings
+
+    device_config.write_config()
+    return jsonify({"success": True})
+
+
 @plugin_bp.route('/api/reorder_playlist', methods=['POST'])
 def reorder_playlist():
     """Replace a playlist's plugin instance order.
