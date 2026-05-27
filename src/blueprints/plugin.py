@@ -501,6 +501,37 @@ def api_update_instance():
     return jsonify({"success": True})
 
 
+@plugin_bp.route('/api/next_in_cycle', methods=['POST'])
+def api_next_in_cycle():
+    """Skip to the next plugin instance in the currently-active playlist.
+
+    The refresh task cycles plugins on its own schedule
+    (plugin_cycle_interval_seconds). This endpoint lets the companion
+    app force "next now" without waiting, which is the BLE-friendly
+    equivalent of clicking Next on a slideshow.
+    """
+    device_config = current_app.config['DEVICE_CONFIG']
+    refresh_task = current_app.config['REFRESH_TASK']
+    playlist_manager = device_config.get_playlist_manager()
+
+    refresh_info = device_config.get_refresh_info()
+    if not refresh_info.playlist:
+        return jsonify({"error": "no active playlist"}), 400
+
+    playlist = playlist_manager.get_playlist(refresh_info.playlist)
+    if not playlist or not playlist.plugins:
+        return jsonify({"error": "playlist has no entries"}), 400
+
+    next_plugin = playlist.get_next_plugin()
+    refresh_task.manual_update(PlaylistRefresh(playlist, next_plugin, force=True))
+
+    return jsonify({
+        "success": True,
+        "playing": next_plugin.name,
+        "plugin_id": next_plugin.plugin_id,
+    })
+
+
 @plugin_bp.route('/api/refresh_display', methods=['POST'])
 def api_refresh_display():
     """Re-trigger display of whatever was last shown.
