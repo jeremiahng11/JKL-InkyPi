@@ -26,6 +26,18 @@ SERVICE_FILE_TARGET="/etc/systemd/system/$SERVICE_FILE"
 APT_REQUIREMENTS_FILE="$SCRIPT_DIR/debian-requirements.txt"
 PIP_REQUIREMENTS_FILE="$SCRIPT_DIR/requirements.txt"
 
+# Where we record the commit hash of the last successful update. Lets
+# re-runs short-circuit when there's nothing new to apply — useful
+# when the user reflexively runs update.sh after every git pull and
+# the pull was a no-op.
+LAST_UPDATE_MARKER="/var/lib/inkypi/last-updated-commit"
+FORCE_UPDATE=0
+for arg in "$@"; do
+  if [ "$arg" = "--force" ] || [ "$arg" = "-f" ]; then
+    FORCE_UPDATE=1
+  fi
+done
+
 echo_success() {
   echo -e "$1 [\e[32m\xE2\x9C\x94\e[0m]"
 }
@@ -126,6 +138,20 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+# Short-circuit when the working tree hasn't moved since the last
+# successful update. Skips apt / pip / file copies / service restarts
+# entirely — the user gets an instant "already up to date" message
+# instead of waiting for a no-op apt-get + pip refresh.
+CURRENT_COMMIT="$(git -C "$SCRIPT_DIR/.." rev-parse HEAD 2>/dev/null || true)"
+if [ "$FORCE_UPDATE" -eq 0 ] && [ -n "$CURRENT_COMMIT" ] && [ -f "$LAST_UPDATE_MARKER" ]; then
+  LAST_COMMIT="$(cat "$LAST_UPDATE_MARKER" 2>/dev/null || true)"
+  if [ "$LAST_COMMIT" = "$CURRENT_COMMIT" ]; then
+    short="${CURRENT_COMMIT:0:7}"
+    echo_success "Already up to date at commit $short. Pass --force to re-apply anyway."
+    exit 0
+  fi
+fi
+
 APT_LOG="/tmp/inkypi-update-apt.log"
 apt-get update -y > "$APT_LOG" 2>&1 \
   || { echo_error "apt-get update failed; see $APT_LOG"; tail -20 "$APT_LOG" >&2; exit 1; }
@@ -191,5 +217,13 @@ update_app_service
 update_extra_services
 update_avahi_service
 update_cli
+
+# Persist the commit we just applied so a follow-up run in a minute
+# (or 30 seconds, or whenever the user reflexively pulls again)
+# short-circuits at the check above instead of re-running everything.
+if [ -n "$CURRENT_COMMIT" ]; then
+  sudo mkdir -p "$(dirname "$LAST_UPDATE_MARKER")"
+  echo "$CURRENT_COMMIT" | sudo tee "$LAST_UPDATE_MARKER" > /dev/null
+fi
 
 echo_success "Update completed."
