@@ -260,6 +260,54 @@ def get_system_stats():
         return jsonify({"error": str(exc)}), 500
 
 
+@main_bp.route('/api/info')
+def api_info():
+    """HTTP mirror of the BLE INFO characteristic.
+
+    Same JSON shape build_info() emits over BLE, so the companion app
+    can populate its dashboard status card when it skipped Bluetooth
+    entirely and came in via the Wi-Fi quick-connect path. Without
+    this endpoint the status card hangs on "Reading device status…"
+    in Wi-Fi-only mode while every other feature works fine over
+    HTTP — because the rest of the app reads /api/state, but the
+    status card historically read from BLE INFO only.
+    """
+    import socket as _socket
+    from network import wifi as _wifi
+
+    device_config = current_app.config['DEVICE_CONFIG']
+    cfg = device_config.get_config()
+
+    try:
+        status = _wifi.current_status()
+    except Exception:
+        status = None
+
+    hotspot_cfg = cfg.get("hotspot") or {}
+
+    return jsonify({
+        "name":    cfg.get("name") or _socket.gethostname(),
+        "version": cfg.get("version", "1.0.0"),
+        "wifi": {
+            "mode": status.mode if status else "offline",
+            "ssid": status.ssid if status else None,
+            "ip":   status.ip if status else None,
+        },
+        "ap": {
+            "ssid":     hotspot_cfg.get("ssid"),
+            "password": hotspot_cfg.get("password"),
+            "ip":       hotspot_cfg.get("gateway", "192.168.4.1"),
+        },
+        "display": {
+            "resolution":     cfg.get("resolution"),
+            "current_plugin": cfg.get("refresh_info", {}).get("plugin_id"),
+            "last_refresh":   cfg.get("refresh_info", {}).get("refresh_time"),
+        },
+        # Trivially true — if the caller hit this endpoint, Flask is up.
+        "flask_reachable": True,
+    })
+
+
 @main_bp.route('/api/state')
 def get_state():
     """JSON snapshot of device state for the companion app's HTTP fast path.
