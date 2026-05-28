@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, current_app, render_template, send_from_directory
+from flask import Blueprint, request, jsonify, current_app, render_template, send_from_directory, send_file
 from plugins.plugin_registry import get_plugin_instance
 from utils.app_utils import resolve_path, handle_request_files, parse_form
 from refresh_task import ManualRefresh, PlaylistRefresh
@@ -226,23 +226,55 @@ def display_plugin_instance():
 
     return jsonify({"success": True, "message": "Display updated"}), 200
 
-@plugin_bp.route('/api/plugin_image/<path:filename>')
-def get_plugin_image(filename):
-    """Serve a single uploaded image file by basename.
+@plugin_bp.route('/api/plugin_image')
+def get_plugin_image_by_path():
+    """Serve a single uploaded image file by absolute path.
 
-    Used by the companion app's Photos screen to render thumbnails for
-    every image in an image_upload instance (the legacy
-    /plugin_instance_image route only exposes the cached *display*
-    image, which doesn't exist until the instance has been rendered).
-    Security: we strip the path to its basename so this can never
-    escape `device_config.plugin_image_dir`.
+    image_upload saves files to ``static/images/saved/`` (see
+    utils.app_utils.handle_request_files), but the companion app
+    previously assumed they lived in ``plugin_image_dir`` and got 404
+    on every thumbnail. The instance's ``imageFiles[]`` setting stores
+    the full absolute path the file was written to, so the simplest
+    fix is to let the caller pass that path through and serve it
+    directly — with a check that the resolved path stays inside the
+    project's ``static/images`` tree (defends against ``?path=/etc/...``
+    style traversal).
+
+    Query: ?path=/full/abs/path/to/file.png
+    """
+    raw = request.args.get('path', '')
+    if not raw:
+        return "Bad request: missing 'path'", 400
+    base = os.path.realpath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        '..', 'static', 'images',
+    ))
+    abs_path = os.path.realpath(raw)
+    if not (abs_path == base or abs_path.startswith(base + os.sep)):
+        return "Forbidden: path outside static/images", 403
+    if not os.path.isfile(abs_path):
+        return "Not found", 404
+    return send_file(abs_path)
+
+
+@plugin_bp.route('/api/plugin_image/<path:filename>')
+def get_plugin_image_legacy(filename):
+    """Legacy basename lookup — kept for compatibility with older
+    companion app builds. New builds call /api/plugin_image?path=...
     """
     device_config = current_app.config['DEVICE_CONFIG']
     safe_name = os.path.basename(filename)
-    full_path = os.path.join(device_config.plugin_image_dir, safe_name)
-    if not os.path.isfile(full_path):
-        return "Not found", 404
-    return send_from_directory(device_config.plugin_image_dir, safe_name)
+    for candidate_dir in (
+        device_config.plugin_image_dir,
+        os.path.realpath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            '..', 'static', 'images', 'saved',
+        )),
+    ):
+        full_path = os.path.join(candidate_dir, safe_name)
+        if os.path.isfile(full_path):
+            return send_from_directory(candidate_dir, safe_name)
+    return "Not found", 404
 
 
 @plugin_bp.route('/api/remove_image', methods=['POST'])
