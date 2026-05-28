@@ -228,33 +228,51 @@ def display_plugin_instance():
 
 @plugin_bp.route('/api/plugin_image')
 def get_plugin_image_by_path():
-    """Serve a single uploaded image file by absolute path.
+    """Serve a single uploaded image file.
 
-    image_upload saves files to ``static/images/saved/`` (see
-    utils.app_utils.handle_request_files), but the companion app
-    previously assumed they lived in ``plugin_image_dir`` and got 404
-    on every thumbnail. The instance's ``imageFiles[]`` setting stores
-    the full absolute path the file was written to, so the simplest
-    fix is to let the caller pass that path through and serve it
-    directly — with a check that the resolved path stays inside the
-    project's ``static/images`` tree (defends against ``?path=/etc/...``
-    style traversal).
+    Tries two lookups in order:
+      1. Absolute path passed in ?path=... — most accurate, since
+         image_upload stores the full path it wrote in imageFiles[].
+      2. Basename of that path searched across the common upload
+         directories (saved/, plugins/). Handles installs whose
+         saved imageFiles[] paths point at the now-symlinked
+         /usr/local/inkypi/src/... even when the running service
+         resolves __file__ via realpath into ~/JKL-InkyPi/src/...
+         — startswith() check on the resolved abs path can otherwise
+         reject the legitimate caller-supplied path.
 
-    Query: ?path=/full/abs/path/to/file.png
+    Path-traversal is rejected at every step by realpath()-checking
+    against the project's static/images/ root.
     """
     raw = request.args.get('path', '')
     if not raw:
         return "Bad request: missing 'path'", 400
+
     base = os.path.realpath(os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         '..', 'static', 'images',
     ))
+
+    def _under_base(p):
+        return p == base or p.startswith(base + os.sep)
+
+    # 1. Try the absolute path as-is (post-realpath).
     abs_path = os.path.realpath(raw)
-    if not (abs_path == base or abs_path.startswith(base + os.sep)):
-        return "Forbidden: path outside static/images", 403
-    if not os.path.isfile(abs_path):
-        return "Not found", 404
-    return send_file(abs_path)
+    if _under_base(abs_path) and os.path.isfile(abs_path):
+        return send_file(abs_path)
+
+    # 2. Fall back to basename lookup in the two upload dirs. This
+    # rescues installs where imageFiles[] stored a path through a
+    # symlink the running process can't see (e.g. /usr/local/inkypi
+    # link removed, or SRC_DIR points elsewhere than __file__).
+    basename = os.path.basename(raw)
+    if basename:
+        for subdir in ('saved', 'plugins'):
+            candidate = os.path.realpath(os.path.join(base, subdir, basename))
+            if _under_base(candidate) and os.path.isfile(candidate):
+                return send_file(candidate)
+
+    return f"Not found (tried abs={abs_path!r}, basename={basename!r})", 404
 
 
 @plugin_bp.route('/api/plugin_image/<path:filename>')
