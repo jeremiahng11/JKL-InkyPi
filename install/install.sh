@@ -288,6 +288,24 @@ install_executable() {
   done
 }
 
+install_avahi_service() {
+  echo "Installing Avahi mDNS service advertisement."
+  local src="$SCRIPT_DIR/inkypi-avahi.service"
+  local dest="/etc/avahi/services/inkypi.service"
+  if [ ! -f "$src" ]; then
+    echo "\tSkipping — $src not found in installer payload"
+    return
+  fi
+  sudo cp "$src" "$dest"
+  sudo chmod 644 "$dest"
+  # avahi-daemon auto-reloads files in /etc/avahi/services/, but
+  # restart it explicitly so the change shows up on the LAN within
+  # seconds rather than waiting for whatever inotify timing applies.
+  sudo systemctl enable avahi-daemon > /dev/null 2>&1 || true
+  sudo systemctl restart avahi-daemon > /dev/null 2>&1 || true
+  echo_success "\tAvahi advertises _inkypi._tcp on port 80 — companion app can discover the Pi over Wi-Fi"
+}
+
 enable_bluetooth() {
   echo "Enabling and starting bluetooth service for BLE peripheral."
 
@@ -490,6 +508,7 @@ if [[ -n "$WS_TYPE" ]]; then
 fi
 install_app_service
 install_extra_services
+install_avahi_service
 enable_bluetooth
 
 echo "Update JS and CSS files"

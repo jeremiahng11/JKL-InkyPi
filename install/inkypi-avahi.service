@@ -1,0 +1,25 @@
+<?xml version="1.0" standalone='no'?>
+<!--
+  Advertise this InkyPi over mDNS so the companion app can discover
+  it on the LAN without needing a BLE scan first. Deployed by
+  install.sh into /etc/avahi/services/inkypi.service and reloaded
+  by avahi-daemon automatically.
+
+  - Service type _inkypi._tcp lets the app browse for InkyPis
+    specifically (vs. trying to filter every _http._tcp on the LAN).
+  - Hostname becomes <inky-host>.local via avahi's default config —
+    no extra config needed.
+  - txt-record "version=1" reserves room for future schema bumps so
+    the app can refuse to talk to an incompatible peripheral.
+-->
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+  <name replace-wildcards="yes">InkyPi on %h</name>
+
+  <service>
+    <type>_inkypi._tcp</type>
+    <port>80</port>
+    <txt-record>version=1</txt-record>
+    <txt-record>path=/api/current_image</txt-record>
+  </service>
+</service-group>

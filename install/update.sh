@@ -65,6 +65,55 @@ update_cli() {
   sudo chmod +x "$INSTALL_PATH/cli/"*
 }
 
+# Re-copy the auxiliary systemd unit files (BLE peripheral, network
+# fallback). These are not part of update_app_service's single-file
+# logic, so without this step a git pull that ships new ExecStartPre
+# / environment / restart-policy lines never reaches the running
+# system. Idempotent — diffs cause a daemon-reload + restart, no-ops
+# are quiet.
+update_extra_services() {
+  local extras=("inkypi-ble.service" "inkypi-netd.service")
+  local changed=0
+  for unit in "${extras[@]}"; do
+    local src="$SCRIPT_DIR/$unit"
+    local dest="/etc/systemd/system/$unit"
+    if [ ! -f "$src" ]; then
+      continue
+    fi
+    if ! cmp -s "$src" "$dest" 2>/dev/null; then
+      sudo cp "$src" "$dest"
+      changed=1
+      echo_success "\tUpdated $unit"
+    fi
+  done
+  if [ "$changed" -eq 1 ]; then
+    sudo systemctl daemon-reload
+    for unit in "${extras[@]}"; do
+      if sudo systemctl is-enabled --quiet "$unit"; then
+        sudo systemctl restart "$unit" || true
+      fi
+    done
+  fi
+}
+
+# Drop or refresh the avahi mDNS service definition so the companion
+# app can discover this Pi on Wi-Fi without prior BLE pairing.
+# Safe to call on installs that lack avahi-daemon — apt install at
+# the top of update.sh will have ensured the package is present.
+update_avahi_service() {
+  local src="$SCRIPT_DIR/inkypi-avahi.service"
+  local dest="/etc/avahi/services/inkypi.service"
+  if [ ! -f "$src" ]; then
+    return
+  fi
+  if ! cmp -s "$src" "$dest" 2>/dev/null; then
+    sudo cp "$src" "$dest"
+    sudo chmod 644 "$dest"
+    sudo systemctl restart avahi-daemon > /dev/null 2>&1 || true
+    echo_success "\tUpdated Avahi mDNS advertisement (_inkypi._tcp)"
+  fi
+}
+
 # Get OS release number, e.g. 11=Bullseye, 12=Bookworm, 13=Trixe
 get_os_version() {
   echo "$(lsb_release -sr)"
@@ -139,6 +188,8 @@ echo "Update JS and CSS files"
 bash $SCRIPT_DIR/update_vendors.sh > /dev/null
 
 update_app_service
+update_extra_services
+update_avahi_service
 update_cli
 
 echo_success "Update completed."
