@@ -391,6 +391,7 @@ def api_updates_apply():
 
     body = request.get_json(silent=True) or {}
     force = bool(body.get('force'))
+    discard_local = bool(body.get('discard_local_changes'))
 
     # Refuse if the working tree is dirty — overlaying a `git pull` over
     # local edits is the fastest way to silently lose work.
@@ -401,12 +402,39 @@ def api_updates_apply():
         return jsonify({"success": False, "stage": "preflight", "steps": [diff_check],
                         "error": "could not read git status"}), 500
     if diff_check["stdout"].strip():
-        return jsonify({
-            "success": False,
-            "stage":   "preflight",
-            "error":   "Working tree has uncommitted changes — commit / stash on the Pi first.",
-            "steps":   [diff_check],
-        }), 409
+        if not discard_local:
+            # Return the dirty file list so the app can show it AND
+            # offer "Discard and retry". Truncate to 30 lines so a
+            # runaway never-gitignored directory doesn't blow the
+            # response size.
+            dirty_lines = diff_check["stdout"].strip().splitlines()[:30]
+            return jsonify({
+                "success":      False,
+                "stage":        "preflight",
+                "error":        "Working tree has uncommitted changes.",
+                "dirty_files":  dirty_lines,
+                "steps":        [diff_check],
+                # Tell the app it can retry with this set so the user
+                # gets an offer button instead of having to SSH.
+                "can_discard":  True,
+            }), 409
+        # User explicitly asked us to nuke local changes — stash
+        # everything (including untracked) so the work isn't gone
+        # forever, just out of the way for the pull. We don't auto-pop
+        # afterwards because pop-with-conflicts is a worse experience
+        # than "your stash is on the Pi, run `git stash pop` to get it
+        # back".
+        stash = _run(
+            ['git', '-c', 'safe.directory=*', '-C', repo_root,
+             'stash', 'push', '-u', '-m', 'inkypi-pre-update'],
+            timeout=15)
+        if stash["exit_code"] != 0:
+            return jsonify({
+                "success": False,
+                "stage":   "preflight",
+                "error":   "Could not stash local changes — see step output.",
+                "steps":   [diff_check, stash],
+            }), 500
 
     # Pull. If this fails (no network, conflicts, …) abort before
     # touching update.sh.

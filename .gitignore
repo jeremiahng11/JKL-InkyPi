@@ -173,3 +173,20 @@ mock_display_output/
 /src/static/scripts/
 /src/static/styles/
 .claude/
+
+# Runtime-generated content under src/static/images/. These pollute
+# git status on every running Pi and blocked the in-app updater's
+# preflight check. They're all rebuildable / user data and don't
+# belong in the repo.
+/src/static/images/current_image.png
+/src/static/images/saved/
+/src/static/images/history/
+/src/static/images/plugins/
+
+# Last-known commit marker that update.sh writes after each run.
+/var/lib/inkypi/
+
+# Runtime device state — gets edited by every settings save / plugin
+# toggle / WiFi join. Not safe to track.
+/src/config/device.json
+/src/config/.refresh_history.json
