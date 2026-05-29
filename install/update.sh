@@ -32,10 +32,20 @@ PIP_REQUIREMENTS_FILE="$SCRIPT_DIR/requirements.txt"
 # the pull was a no-op.
 LAST_UPDATE_MARKER="/var/lib/inkypi/last-updated-commit"
 FORCE_UPDATE=0
+# Defer the inkypi.service restart for use when update.sh is being
+# called from *inside* a Flask request (the companion app's
+# streaming Update flow). Restarting inkypi mid-run would SIGTERM
+# the parent Flask process, killing update.sh with it before later
+# steps (extras, avahi, marker write) get to run. With --defer-
+# restart we copy the new unit file but skip the restart; the
+# caller arranges to bounce the service after the streaming response
+# finishes.
+DEFER_RESTART=0
 for arg in "$@"; do
-  if [ "$arg" = "--force" ] || [ "$arg" = "-f" ]; then
-    FORCE_UPDATE=1
-  fi
+  case "$arg" in
+    --force|-f) FORCE_UPDATE=1 ;;
+    --defer-restart) DEFER_RESTART=1 ;;
+  esac
 done
 
 echo_success() {
@@ -63,9 +73,17 @@ update_app_service() {
   echo "Updating $APPNAME systemd service."
   if [ -f "$SERVICE_FILE_SOURCE" ]; then
     cp "$SERVICE_FILE_SOURCE" "$SERVICE_FILE_TARGET"
-    echo "Restarting $APPNAME service."
     sudo systemctl daemon-reload
-    sudo systemctl restart $SERVICE_FILE
+    if [ "$DEFER_RESTART" -eq 1 ]; then
+      # We were invoked from inside a running Flask request — bouncing
+      # the service now would kill our own parent. The caller is
+      # responsible for restarting inkypi after the streaming
+      # response has finished flushing.
+      echo "Deferring $APPNAME restart (--defer-restart); caller will bounce the service."
+    else
+      echo "Restarting $APPNAME service."
+      sudo systemctl restart $SERVICE_FILE
+    fi
   else
     echo_error "ERROR: Service file $SERVICE_FILE_SOURCE not found!"
     exit 1

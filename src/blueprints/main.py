@@ -519,7 +519,15 @@ def _apply_update_streaming(req):
 
     # ─── stage: update.sh — streamed line-by-line ────────────────────
     yield _emit({"event": "stage_start", "stage": "update_sh"})
-    update_cmd = ['sudo', '-E', 'bash', _os.path.join(repo_root, 'install', 'update.sh')]
+    # --defer-restart tells update.sh's update_app_service to copy
+    # the new unit file but skip the inkypi.service restart —
+    # bouncing it from inside a Flask request would SIGTERM the
+    # parent and kill update.sh mid-run. We schedule a deferred
+    # restart below after the streaming response has finished
+    # flushing.
+    update_cmd = ['sudo', '-E', 'bash',
+                  _os.path.join(repo_root, 'install', 'update.sh'),
+                  '--defer-restart']
     if force:
         update_cmd.append('--force')
     final_step = None
@@ -537,6 +545,25 @@ def _apply_update_streaming(req):
                  "step": final_step})
 
     success = final_step["exit_code"] == 0 and not final_step["timed_out"]
+    if success:
+        # Spawn a detached child that waits ~8s (long enough for our
+        # streaming response to flush + the client's HTTP buffer to
+        # drain) and then bounces inkypi.service. start_new_session
+        # = True makes it survive systemctl restart inkypi killing
+        # our parent. The companion app's auto-await-Pi-back-online
+        # loop (in updates_screen) handles the brief downtime.
+        try:
+            subprocess.Popen(
+                ['bash', '-c',
+                 'sleep 8 && systemctl restart inkypi.service'],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            # Best-effort: if we can't spawn, the user can restart
+            # manually. The done event will still flag success.
+            pass
     yield _emit({
         "event":   "done",
         "success": success,
