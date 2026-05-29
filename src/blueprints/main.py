@@ -285,9 +285,19 @@ def api_updates_check():
                 "error": "Pi source is not a git checkout — update check not supported",
             })
 
-        # Best-effort fetch; ignore failure (offline, auth, etc.) and
-        # fall back to whatever cached refs we already have.
-        _git('fetch', '--quiet', timeout=20)
+        # Best-effort fetch — explicitly catch failures (timeout, no
+        # internet, blocked outbound HTTPS, transient DNS) so we can
+        # still report the local state from cached refs. Without this
+        # catch a Pi without upstream connectivity made the whole
+        # endpoint 504 and the app rendered "offline" with nothing
+        # else actionable.
+        fetch_failed = None
+        try:
+            _git('fetch', '--quiet', timeout=20)
+        except subprocess.TimeoutExpired:
+            fetch_failed = "git fetch timed out (no internet?)"
+        except Exception as exc:
+            fetch_failed = f"git fetch failed: {exc}"
 
         head = _git('rev-parse', '--short', 'HEAD').stdout.strip()
         head_full = _git('rev-parse', 'HEAD').stdout.strip()
@@ -314,11 +324,15 @@ def api_updates_check():
             changelog = [line for line in log.splitlines() if line]
 
         return jsonify({
-            "available": behind > 0,
-            "behind": behind,
-            "current_short": head,
+            "available":      behind > 0,
+            "behind":         behind,
+            "current_short":  head,
             "upstream_short": upstream,
-            "changelog": changelog,
+            "changelog":      changelog,
+            # Surface fetch-failed-but-cached-refs-used so the app
+            # can render an advisory ("Couldn't reach GitHub; showing
+            # cached refs") rather than silently returning offline.
+            "fetch_warning":  fetch_failed,
         })
     except subprocess.TimeoutExpired:
         return jsonify({"error": "git command timed out", "available": False, "behind": 0}), 504
