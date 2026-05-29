@@ -43,6 +43,108 @@ def get_current_image():
     return response
 
 
+@main_bp.route('/api/display/history')
+def api_display_history():
+    """List the last N images the panel actually displayed.
+
+    Populated by refresh_task on every successful display update —
+    see utils.display_history. Returns newest-first JSON. The
+    companion app shows this as a horizontally-scrolling strip
+    below the live preview.
+    """
+    from utils import display_history
+    device_config = current_app.config['DEVICE_CONFIG']
+    entries = display_history.list_entries(device_config)
+    return jsonify({
+        "entries": [
+            {
+                "id":              e["id"],
+                "timestamp_ms":    e.get("timestamp_ms"),
+                "plugin_id":       e.get("plugin_id"),
+                "plugin_instance": e.get("plugin_instance"),
+                "playlist":        e.get("playlist"),
+                "image_url":       f'/api/display/history/{e["id"]}',
+            }
+            for e in entries
+        ],
+    })
+
+
+@main_bp.route('/api/display/history/<entry_id>')
+def api_display_history_image(entry_id):
+    """Serve the PNG for one history entry. Basename-sanitised."""
+    from utils import display_history
+    device_config = current_app.config['DEVICE_CONFIG']
+    safe = os.path.basename(entry_id)
+    entry = display_history.find_entry(device_config, safe)
+    if entry is None:
+        return "Not found", 404
+    return send_file(entry["image_path"], mimetype='image/png')
+
+
+@main_bp.route('/api/display/history/<entry_id>/replay', methods=['POST'])
+def api_display_history_replay(entry_id):
+    """Re-display a historical image immediately. Skips the plugin
+    pipeline — sends the saved PNG straight to the display manager,
+    so plugin_index / next-in-cycle state isn't perturbed."""
+    from utils import display_history
+    from display.display_manager import DisplayManager  # local import
+    device_config = current_app.config['DEVICE_CONFIG']
+    safe = os.path.basename(entry_id)
+    entry = display_history.find_entry(device_config, safe)
+    if entry is None:
+        return jsonify({"error": "history entry not found"}), 404
+
+    try:
+        from PIL import Image
+        with Image.open(entry["image_path"]) as img:
+            image = img.copy()
+        display_manager = DisplayManager(device_config)
+        display_manager.display_image(image, image_settings=[])
+        return jsonify({
+            "success":  True,
+            "id":       safe,
+            "replayed": entry.get("plugin_instance"),
+        })
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@main_bp.route('/api/plugins/catalog')
+def api_plugins_catalog():
+    """Rich plugin metadata for the companion app's plugin browser.
+
+    Loads each plugin's plugin-info.json (name, description, icon,
+    capabilities) and pairs it with whether the plugin is currently
+    represented in any playlist. Lets the app render a "browse and
+    add" experience richer than the plain list already on
+    /api/state.
+    """
+    device_config = current_app.config['DEVICE_CONFIG']
+    plugins_meta = device_config.get_plugins() or []
+    used_ids: set[str] = set()
+    for pl in device_config.get_playlist_manager().to_dict().get('playlists', []):
+        for p in pl.get('plugins', []) or []:
+            pid = p.get('plugin_id')
+            if pid:
+                used_ids.add(pid)
+
+    catalog = []
+    for meta in plugins_meta:
+        pid = meta.get('id') or meta.get('plugin_id')
+        catalog.append({
+            "id":               pid,
+            "display_name":     meta.get('display_name') or meta.get('name') or pid,
+            "description":      meta.get('description'),
+            "icon_url":         f'/static/images/plugins/{pid}/icon.png' if pid else None,
+            "capabilities":     meta.get('capabilities') or [],
+            "requires_api_key": meta.get('requires_api_key', False),
+            "configured":       pid in used_ids,
+        })
+    catalog.sort(key=lambda c: (not c["configured"], (c["display_name"] or '').lower()))
+    return jsonify({"plugins": catalog})
+
+
 @main_bp.route('/api/plugin_order', methods=['POST'])
 def save_plugin_order():
     """Save the custom plugin order."""

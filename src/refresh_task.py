@@ -120,6 +120,19 @@ class RefreshTask:
                         if image_hash != latest_refresh.image_hash:
                             logger.info(f"Updating display. | refresh_info: {refresh_info}")
                             self.display_manager.display_image(image, image_settings=plugin.config.get("image_settings", []))
+                            # Stash a copy in the rolling history so the
+                            # companion app's dashboard can scrub back
+                            # through what the panel showed lately.
+                            try:
+                                from utils import display_history
+                                display_history.record(
+                                    self.device_config, image,
+                                    plugin_id=refresh_info.get("plugin_id"),
+                                    plugin_instance=refresh_info.get("plugin_instance"),
+                                    playlist=refresh_info.get("playlist"),
+                                )
+                            except Exception:
+                                logger.exception("display_history record failed")
                         else:
                             logger.info(f"Image already displayed, skipping refresh. | refresh_info: {refresh_info}")
 
