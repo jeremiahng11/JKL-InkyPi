@@ -139,6 +139,92 @@ def api_updates_check():
         return jsonify({"error": str(e), "available": False, "behind": 0}), 500
 
 
+@main_bp.route('/api/updates/apply', methods=['POST'])
+def api_updates_apply():
+    """Pull + run install/update.sh in-place from the companion app.
+
+    Safety guards:
+      - Refuses when the working tree has uncommitted changes — we
+        won't silently clobber user edits.
+      - Refuses when no upstream branch is tracked (CI dry-runs, etc.).
+      - Runs each step with a hard timeout so we can't get wedged.
+      - Caps captured output at 64KB so a runaway log doesn't blow
+        Flask's response buffer.
+      - Returns the full stdout/stderr of each phase so the app can
+        surface what happened on failure.
+
+    POSTing with no body is a normal "run it now". Body
+    `{"force": true}` bypasses the up-to-date short-circuit in
+    update.sh (passes --force through).
+    """
+    import subprocess
+
+    src_dir = os.path.realpath(os.path.dirname(os.path.dirname(__file__)))
+    repo_root = os.path.dirname(src_dir)
+
+    def _run(cmd, timeout, cwd=repo_root):
+        try:
+            r = subprocess.run(
+                cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
+            )
+            return {
+                "cmd":         ' '.join(cmd),
+                "exit_code":   r.returncode,
+                "stdout":      (r.stdout or '')[-65536:],
+                "stderr":      (r.stderr or '')[-65536:],
+                "timed_out":   False,
+            }
+        except subprocess.TimeoutExpired as exc:
+            return {
+                "cmd":         ' '.join(cmd),
+                "exit_code":   -1,
+                "stdout":      (exc.stdout or b'')[-32768:].decode('utf-8', errors='replace') if exc.stdout else '',
+                "stderr":      (exc.stderr or b'')[-32768:].decode('utf-8', errors='replace') if exc.stderr else '',
+                "timed_out":   True,
+            }
+
+    body = request.get_json(silent=True) or {}
+    force = bool(body.get('force'))
+
+    # Refuse if the working tree is dirty — overlaying a `git pull` over
+    # local edits is the fastest way to silently lose work.
+    diff_check = _run(['git', '-C', repo_root, 'status', '--porcelain'], timeout=5)
+    if diff_check["exit_code"] != 0:
+        return jsonify({"success": False, "stage": "preflight", "steps": [diff_check],
+                        "error": "could not read git status"}), 500
+    if diff_check["stdout"].strip():
+        return jsonify({
+            "success": False,
+            "stage":   "preflight",
+            "error":   "Working tree has uncommitted changes — commit / stash on the Pi first.",
+            "steps":   [diff_check],
+        }), 409
+
+    # Pull. If this fails (no network, conflicts, …) abort before
+    # touching update.sh.
+    pull = _run(['git', '-C', repo_root, 'pull', '--ff-only'], timeout=60)
+    if pull["exit_code"] != 0:
+        return jsonify({"success": False, "stage": "git_pull",
+                        "steps": [diff_check, pull],
+                        "error": "git pull failed — see steps for details"}), 500
+
+    # Run update.sh. Has its own already-up-to-date short-circuit
+    # unless we pass --force.
+    update_cmd = ['sudo', 'bash', os.path.join(repo_root, 'install', 'update.sh')]
+    if force:
+        update_cmd.append('--force')
+    upd = _run(update_cmd, timeout=900)  # 15 min — apt/pip can be slow
+
+    steps = [diff_check, pull, upd]
+    success = upd["exit_code"] == 0 and not upd["timed_out"]
+    return jsonify({
+        "success": success,
+        "stage":   "update_sh" if not success else "complete",
+        "steps":   steps,
+        "error":   None if success else "update.sh exited with non-zero status",
+    }), (200 if success else 500)
+
+
 @main_bp.route('/api/about')
 def api_about():
     """Pi-side identity + health snapshot for the companion app's
