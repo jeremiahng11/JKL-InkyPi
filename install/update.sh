@@ -142,7 +142,12 @@ fi
 # successful update. Skips apt / pip / file copies / service restarts
 # entirely — the user gets an instant "already up to date" message
 # instead of waiting for a no-op apt-get + pip refresh.
-CURRENT_COMMIT="$(git -C "$SCRIPT_DIR/.." rev-parse HEAD 2>/dev/null || true)"
+# -c safe.directory=* tells git to trust this repo even when its
+# working tree is owned by a different user (typical install: the
+# repo is in /home/inky/JKL-InkyPi/ but update.sh is launched as
+# root via sudo). Without this flag git fails with "detected dubious
+# ownership" and the short-circuit check fires every time.
+CURRENT_COMMIT="$(git -c safe.directory='*' -C "$SCRIPT_DIR/.." rev-parse HEAD 2>/dev/null || true)"
 if [ "$FORCE_UPDATE" -eq 0 ] && [ -n "$CURRENT_COMMIT" ] && [ -f "$LAST_UPDATE_MARKER" ]; then
   LAST_COMMIT="$(cat "$LAST_UPDATE_MARKER" 2>/dev/null || true)"
   if [ "$LAST_COMMIT" = "$CURRENT_COMMIT" ]; then

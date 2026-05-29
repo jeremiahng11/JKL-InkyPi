@@ -269,8 +269,13 @@ def api_updates_check():
     repo_root = os.path.dirname(src_dir)
 
     def _git(*args, timeout=15):
+        # -c safe.directory=* tells git to trust this repo regardless
+        # of its filesystem ownership. inkypi.service runs as root but
+        # the working tree typically lives in /home/<user>/, so without
+        # this flag modern git refuses with "detected dubious
+        # ownership" and the endpoint mis-reports "not a git checkout".
         return subprocess.run(
-            ['git', '-C', repo_root, *args],
+            ['git', '-c', 'safe.directory=*', '-C', repo_root, *args],
             capture_output=True, text=True, timeout=timeout,
         )
 
@@ -389,7 +394,9 @@ def api_updates_apply():
 
     # Refuse if the working tree is dirty — overlaying a `git pull` over
     # local edits is the fastest way to silently lose work.
-    diff_check = _run(['git', '-C', repo_root, 'status', '--porcelain'], timeout=5)
+    diff_check = _run(
+        ['git', '-c', 'safe.directory=*', '-C', repo_root, 'status', '--porcelain'],
+        timeout=5)
     if diff_check["exit_code"] != 0:
         return jsonify({"success": False, "stage": "preflight", "steps": [diff_check],
                         "error": "could not read git status"}), 500
@@ -403,7 +410,9 @@ def api_updates_apply():
 
     # Pull. If this fails (no network, conflicts, …) abort before
     # touching update.sh.
-    pull = _run(['git', '-C', repo_root, 'pull', '--ff-only'], timeout=60)
+    pull = _run(
+        ['git', '-c', 'safe.directory=*', '-C', repo_root, 'pull', '--ff-only'],
+        timeout=60)
     if pull["exit_code"] != 0:
         return jsonify({"success": False, "stage": "git_pull",
                         "steps": [diff_check, pull],
