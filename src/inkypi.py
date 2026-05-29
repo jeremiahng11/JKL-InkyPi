@@ -81,6 +81,43 @@ app.register_blueprint(plugin_bp)
 app.register_blueprint(playlist_bp)
 app.register_blueprint(apikeys_bp)
 
+
+# Catch-all error handlers so the companion app never has to parse an
+# empty body or Flask's HTML 500 page — every failure surfaces as
+# JSON with an "error" string and the right status code.
+def _json_error(message, code):
+    from flask import jsonify
+    resp = jsonify({"error": message, "status": code})
+    resp.status_code = code
+    return resp
+
+
+@app.errorhandler(404)
+def _handle_404(err):
+    return _json_error(f"Route not found: {err}", 404)
+
+
+@app.errorhandler(405)
+def _handle_405(err):
+    return _json_error(f"Method not allowed: {err}", 405)
+
+
+@app.errorhandler(500)
+def _handle_500(err):
+    # Flask logs the traceback already; this just keeps the
+    # companion app's JSON-decoder happy on the wire.
+    return _json_error(f"Internal server error: {err}", 500)
+
+
+@app.errorhandler(Exception)
+def _handle_any_exception(err):
+    # Last-ditch handler — anything not caught upstream. Useful when
+    # a new endpoint forgets its own try/except.
+    import logging
+    logging.getLogger(__name__).exception(
+        "Unhandled exception in Flask request handler")
+    return _json_error(f"Unhandled exception: {err}", 500)
+
 # Register opener for HEIF/HEIC images
 register_heif_opener()
 
