@@ -551,6 +551,81 @@ def api_update_instance():
     return jsonify({"success": True})
 
 
+@plugin_bp.route('/api/next_image_in_instance', methods=['POST'])
+def api_next_image_in_instance():
+    """Advance the displayed image within the currently-running
+    image_upload instance, then force a refresh.
+
+    The companion app's "Next" button on the dashboard preview maps
+    to this when the active plugin is image_upload — without it,
+    /api/next_in_cycle on a single-instance playlist would re-run
+    the same instance and rely on image_upload.generate_image's
+    "show current then post-increment" behaviour, which:
+
+      • produces the off-by-one feel ("I tapped Next and saw the
+        SAME image again, then the next tap shows what I wanted"),
+      • depends on the hash-skip check in refresh_task not eating
+        the result when consecutive images render visually similar.
+
+    Pre-incrementing image_index here means: the user's tap → the
+    very next image is displayed → image_index moves to the one
+    after that. Two consecutive taps cycle two photos forward, as
+    expected.
+
+    Body: optional {"playlist": ..., "instance": ...}. Default is
+    the currently-displaying instance from refresh_info.
+    """
+    device_config = current_app.config['DEVICE_CONFIG']
+    refresh_task = current_app.config['REFRESH_TASK']
+    playlist_manager = device_config.get_playlist_manager()
+    refresh_info = device_config.get_refresh_info()
+
+    body = request.get_json(silent=True) or {}
+    playlist_name = body.get("playlist") or refresh_info.playlist
+    instance_name = body.get("instance") or refresh_info.plugin_instance
+
+    if not playlist_name or not instance_name:
+        return jsonify({"error": "no active image_upload instance"}), 400
+
+    playlist = playlist_manager.get_playlist(playlist_name)
+    if not playlist:
+        return jsonify({"error": f"playlist {playlist_name!r} not found"}), 404
+
+    instance = playlist.find_plugin("image_upload", instance_name)
+    if not instance:
+        return jsonify({
+            "error": f"image_upload instance {instance_name!r} not found in {playlist_name!r}",
+        }), 404
+
+    images = instance.settings.get("imageFiles[]") or []
+    if len(images) < 2:
+        return jsonify({
+            "error": "instance has fewer than 2 images, nothing to advance",
+            "image_count": len(images),
+        }), 400
+
+    # image_upload's generate_image shows settings['image_index'] and
+    # then sets image_index = (idx + 1) % N. To "go to the next image"
+    # we want the displayed index AFTER the next render to be the
+    # current + 1. So set image_index to current + 1; generate_image
+    # will render that and post-increment to current + 2.
+    current = int(instance.settings.get("image_index", 0) or 0)
+    target = (current + 1) % len(images)
+    instance.settings["image_index"] = target
+    device_config.write_config()
+
+    refresh_task.manual_update(PlaylistRefresh(playlist, instance, force=True))
+
+    return jsonify({
+        "success":      True,
+        "playlist":     playlist_name,
+        "instance":     instance_name,
+        "image_index":  target,
+        "image_path":   images[target],
+        "image_count":  len(images),
+    })
+
+
 @plugin_bp.route('/api/next_in_cycle', methods=['POST'])
 def api_next_in_cycle():
     """Skip to the next plugin instance in the currently-active playlist.
