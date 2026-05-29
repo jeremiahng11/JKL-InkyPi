@@ -85,11 +85,18 @@ def api_display_history_image(entry_id):
 @main_bp.route('/api/display/history/<entry_id>/replay', methods=['POST'])
 def api_display_history_replay(entry_id):
     """Re-display a historical image immediately. Skips the plugin
-    pipeline — sends the saved PNG straight to the display manager,
-    so plugin_index / next-in-cycle state isn't perturbed."""
+    pipeline — sends the saved PNG straight to the existing display
+    manager, so plugin_index / next-in-cycle state isn't perturbed.
+
+    Uses the shared display_manager Flask was initialised with
+    (app.config['DISPLAY_MANAGER']) rather than instantiating a
+    fresh one — re-initialising the e-ink SPI bus on every replay
+    is slow + risky on real hardware."""
     from utils import display_history
-    from display.display_manager import DisplayManager  # local import
     device_config = current_app.config['DEVICE_CONFIG']
+    display_manager = current_app.config.get('DISPLAY_MANAGER')
+    if display_manager is None:
+        return jsonify({"error": "display manager not initialised"}), 500
     safe = os.path.basename(entry_id)
     entry = display_history.find_entry(device_config, safe)
     if entry is None:
@@ -99,7 +106,6 @@ def api_display_history_replay(entry_id):
         from PIL import Image
         with Image.open(entry["image_path"]) as img:
             image = img.copy()
-        display_manager = DisplayManager(device_config)
         display_manager.display_image(image, image_settings=[])
         return jsonify({
             "success":  True,
