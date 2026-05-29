@@ -807,6 +807,73 @@ def api_restore():
     return jsonify({"success": True})
 
 
+@main_bp.route('/api/system/cleanup', methods=['POST'])
+def api_system_cleanup():
+    """Reclaim disk space by clearing rebuildable runtime caches.
+
+    Deletes everything under:
+      • static/images/history/  — the rolling display-history snapshots
+      • static/images/plugins/  — cached per-instance plugin renders
+
+    All entries are rebuildable — the next refresh writes a fresh
+    plugin render, the next display update writes a new history
+    entry. We never touch static/images/saved/ (user-uploaded
+    photos) or device.json.
+
+    Returns the byte count reclaimed + the number of files removed
+    per category so the app can show "Reclaimed 42 MB across 87
+    files".
+    """
+    import shutil
+
+    src_root = os.path.realpath(
+        os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                     'static', 'images'))
+
+    def _wipe_dir(path):
+        if not os.path.isdir(path):
+            return 0, 0
+        bytes_freed = 0
+        files_removed = 0
+        for name in os.listdir(path):
+            full = os.path.join(path, name)
+            try:
+                if os.path.isfile(full):
+                    bytes_freed += os.path.getsize(full)
+                    os.remove(full)
+                    files_removed += 1
+                elif os.path.isdir(full):
+                    # Subdirs in plugins/ — total their size then nuke.
+                    for root, _, files in os.walk(full):
+                        for f in files:
+                            try:
+                                bytes_freed += os.path.getsize(
+                                    os.path.join(root, f))
+                                files_removed += 1
+                            except OSError:
+                                pass
+                    shutil.rmtree(full, ignore_errors=True)
+            except OSError:
+                pass
+        return bytes_freed, files_removed
+
+    history_bytes, history_files = _wipe_dir(os.path.join(src_root, 'history'))
+    plugins_bytes, plugins_files = _wipe_dir(os.path.join(src_root, 'plugins'))
+
+    total_bytes = history_bytes + plugins_bytes
+    total_files = history_files + plugins_files
+
+    return jsonify({
+        "success": True,
+        "bytes_reclaimed": total_bytes,
+        "files_removed":   total_files,
+        "breakdown": {
+            "history": {"bytes": history_bytes, "files": history_files},
+            "plugins": {"bytes": plugins_bytes, "files": plugins_files},
+        },
+    })
+
+
 @main_bp.route('/api/system_stats')
 def get_system_stats():
     """Lightweight system snapshot for the companion app's dashboard card.
