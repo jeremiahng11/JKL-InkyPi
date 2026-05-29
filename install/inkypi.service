@@ -15,7 +15,12 @@ RuntimeDirectory=inkypi
 WorkingDirectory=/run/inkypi
 ExecStart=/usr/local/bin/inkypi run
 Restart=on-failure
-RestartSec=60
+# 10s instead of 60s — a transient crash during boot (an import
+# error in a new endpoint, a stale .pyc, the symlink temporarily
+# missing during update.sh) used to leave the Pi dark for a full
+# minute before the next attempt. Companion-app users would see
+# "Pi unreachable" and assume the update broke the install.
+RestartSec=10
 KillSignal=SIGINT
 StandardOutput=journal
 StandardError=journal
