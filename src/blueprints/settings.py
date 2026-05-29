@@ -96,7 +96,7 @@ def shutdown():
 def download_logs():
     try:
         buffer = io.StringIO()
-        
+
         # Get 'hours' from query parameters, default to 2 if not provided or invalid
         hours_str = request.args.get('hours', '2')
         try:
@@ -105,15 +105,30 @@ def download_logs():
             hours = 2
         since = datetime.now() - timedelta(hours=hours)
 
+        # Service selector — whitelist so we can't be tricked into
+        # tailing arbitrary systemd units (sshd, etc.). Default stays
+        # inkypi.service for backwards compat with the web UI.
+        allowed_units = {
+            "inkypi.service",
+            "inkypi-ble.service",
+            "inkypi-netd.service",
+            "bluetooth.service",
+        }
+        service = request.args.get('service', 'inkypi.service')
+        if not service.endswith('.service'):
+            service = f"{service}.service"
+        if service not in allowed_units:
+            service = 'inkypi.service'
+
         if not JOURNAL_AVAILABLE:
             # Return a message when running in development mode without systemd
             buffer.write(f"Log download not available in development mode (cysystemd not installed).\n")
-            buffer.write(f"Logs would normally show InkyPi service logs from the last {hours} hours.\n")
+            buffer.write(f"Logs would normally show {service} entries from the last {hours} hours.\n")
             buffer.write(f"\nTo see Flask development logs, check your terminal output.\n")
         else:
             reader = JournalReader()
             reader.open(JournalOpenMode.SYSTEM)
-            reader.add_filter(Rule("_SYSTEMD_UNIT", "inkypi.service"))
+            reader.add_filter(Rule("_SYSTEMD_UNIT", service))
             reader.seek_realtime_usec(int(since.timestamp() * 1_000_000))
 
             for record in reader:
