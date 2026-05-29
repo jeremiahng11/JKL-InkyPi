@@ -260,20 +260,28 @@ def get_system_stats():
         return jsonify({"error": str(exc)}), 500
 
 
+_INFO_CACHE = {"at": 0.0, "payload": None}
+_INFO_CACHE_TTL = 5.0  # seconds — small window since wifi.ip changes infrequently
+
+
 @main_bp.route('/api/info')
 def api_info():
     """HTTP mirror of the BLE INFO characteristic.
 
-    Same JSON shape build_info() emits over BLE, so the companion app
-    can populate its dashboard status card when it skipped Bluetooth
-    entirely and came in via the Wi-Fi quick-connect path. Without
-    this endpoint the status card hangs on "Reading device status…"
-    in Wi-Fi-only mode while every other feature works fine over
-    HTTP — because the rest of the app reads /api/state, but the
-    status card historically read from BLE INFO only.
+    Cached for ~5 seconds: the companion app probes this endpoint
+    *and* reads it for the dashboard status card, so back-to-back
+    calls would otherwise both pay the wifi.current_status() cost
+    (nmcli shell-out, ~150-300ms on a Pi Zero 2 W). The TTL is short
+    enough that meaningful state changes (Wi-Fi joined / dropped)
+    surface within a few seconds.
     """
+    import time
     import socket as _socket
     from network import wifi as _wifi
+
+    now = time.time()
+    if _INFO_CACHE["payload"] is not None and (now - _INFO_CACHE["at"]) < _INFO_CACHE_TTL:
+        return jsonify(_INFO_CACHE["payload"])
 
     device_config = current_app.config['DEVICE_CONFIG']
     cfg = device_config.get_config()
@@ -285,7 +293,7 @@ def api_info():
 
     hotspot_cfg = cfg.get("hotspot") or {}
 
-    return jsonify({
+    payload = {
         "name":    cfg.get("name") or _socket.gethostname(),
         "version": cfg.get("version", "1.0.0"),
         "wifi": {
@@ -305,7 +313,10 @@ def api_info():
         },
         # Trivially true — if the caller hit this endpoint, Flask is up.
         "flask_reachable": True,
-    })
+    }
+    _INFO_CACHE["at"] = now
+    _INFO_CACHE["payload"] = payload
+    return jsonify(payload)
 
 
 @main_bp.route('/api/state')
