@@ -328,16 +328,44 @@ def api_updates_check():
             ).stdout.strip()
             changelog = [line for line in log.splitlines() if line]
 
+        # Detect "git pulled but update.sh never finished its run".
+        # update.sh writes LAST_UPDATE_MARKER ($CURRENT_COMMIT) only
+        # after every step (apt / pip / unit files / avahi / cli /
+        # vendor sync) succeeded. If the file exists and disagrees
+        # with HEAD, the working tree is on a newer commit than the
+        # last fully-applied update — so apt / service state may be
+        # stale even though `git rev-list HEAD..@{u}` says zero.
+        # Without this signal the app would (and did, until just now)
+        # render "Up to date" even when the user's last update half-
+        # completed.
+        incomplete = False
+        last_applied_short = None
+        marker_path = '/var/lib/inkypi/last-updated-commit'
+        if os.path.isfile(marker_path):
+            try:
+                with open(marker_path) as _f:
+                    last_applied = _f.read().strip()
+                if last_applied and last_applied != head_full:
+                    incomplete = True
+                    last_applied_short = last_applied[:7]
+            except OSError:
+                pass
+
         return jsonify({
-            "available":      behind > 0,
-            "behind":         behind,
-            "current_short":  head,
-            "upstream_short": upstream,
-            "changelog":      changelog,
+            "available":           behind > 0,
+            "behind":              behind,
+            "current_short":       head,
+            "upstream_short":      upstream,
+            "changelog":           changelog,
             # Surface fetch-failed-but-cached-refs-used so the app
             # can render an advisory ("Couldn't reach GitHub; showing
             # cached refs") rather than silently returning offline.
-            "fetch_warning":  fetch_failed,
+            "fetch_warning":       fetch_failed,
+            # NEW: HEAD doesn't match LAST_UPDATE_MARKER → previous
+            # update.sh run was interrupted; system state is out of
+            # sync with the code on disk.
+            "incomplete_apply":    incomplete,
+            "last_applied_short":  last_applied_short,
         })
     except subprocess.TimeoutExpired:
         return jsonify({"error": "git command timed out", "available": False, "behind": 0}), 504
