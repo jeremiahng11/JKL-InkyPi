@@ -45,12 +45,19 @@ Companion app source + build instructions:
 
 | Screen | Capability |
 |--------|------------|
-| **Scan** | Find any InkyPi within Bluetooth range (~10m) |
-| **Dashboard** | Live device status (Wi-Fi mode, IP, current plugin, display resolution) |
-| **Wi-Fi setup** | Scan visible networks, enter password, join — fully via BLE so it works before any Wi-Fi is configured |
-| **Plugins & playlists** | Browse configured playlists and push any plugin instance to the display instantly |
-| **Upload image** | Pick from gallery or camera, stream the image to the Pi over BLE (or much faster over Wi-Fi when both are on the same network) |
-| **Settings** | Device name, timezone, orientation, plugin cycle, image tuning, reboot/shutdown |
+| **Find InkyPi** | Single list of every reachable Pi — Wi-Fi targets (mDNS + cached IP + IP from BLE-advertisement manufacturer data, deduplicated) on top, Bluetooth scan results below. Wi-Fi is auto-preferred when reachable. |
+| **Dashboard** | Live status: Wi-Fi mode + SSID + IP, e-ink resolution, current plugin. Inline preview of what's on the display with refresh, force re-render, and skip-next buttons. CPU / memory / disk / load stats card auto-pauses when you're on a different tab. |
+| **Photos** | Gallery of every uploaded image flattened across instances. Tap to view full-size, display now, or delete. FAB opens the Upload flow. |
+| **Playlists** | Create / edit / time-bound / reorder playlists. Tap any plugin instance to push it to the display immediately. |
+| **Upload image** | Pick from gallery / camera / URL. Transport picker shows whether you're going over Wi-Fi (fast) or Bluetooth (slow); cellular-only state surfaces a "join the same Wi-Fi for ~1000× faster uploads" hint. Optional **Save to playlist** + custom refresh interval. |
+| **Settings → Wi-Fi setup** | Scan visible networks, join one, add hidden networks, forget saved ones. Works over BLE for first-time provisioning. |
+| **Settings → Plugins** | Browse plugins, switch the active one, reorder the listing the "New instance" picker shows. |
+| **Settings → API keys** | OpenAI / weather / calendar tokens — edits `.env` on the Pi. |
+| **Settings → Logs** | Tail the `inkypi.service` journal and share / copy. |
+| **Settings → Backup / restore** | Snapshot `device.json` to a copyable JSON envelope. Restore replaces it atomically. |
+| **Settings → Updates** | Shows commits behind upstream + the short changelog. **Update now** button triggers `git pull && install/update.sh` remotely with live step-by-step progress + collapsible per-stage stdout/stderr on failure — no SSH needed. |
+| **Settings → Network override** | Pin the Pi's IP / hostname manually when auto-discovery picks the wrong address. |
+| **Settings → About** | Identity + service health snapshot, including whether the BLE secondary advertisement registered cleanly. |
 
 ### First-time setup walkthrough
 
@@ -75,6 +82,18 @@ Companion app source + build instructions:
   (~5–15 KB/s on Pi Zero 2 W). For frequent uploads, keep the Pi on a
   shared Wi-Fi network — the app uses HTTP over Wi-Fi automatically when
   available.
+- The Pi advertises its current Wi-Fi IP in its BLE advertisement's
+  manufacturer data (see
+  [docs/bluetooth.md](./docs/bluetooth.md#advertisement-payload--wi-fi-ip-in-manufacturer-data-v1)).
+  The app reads it during BLE scan and probes HTTP at that address
+  *without ever opening a GATT connection* — when the Pi is reachable
+  on Wi-Fi the entire 3-5s BLE handshake can be skipped.
+- Avahi also advertises `_inkypi._tcp` on port 80, so apps that prefer
+  mDNS over manufacturer data work the same way.
+- BLE pairing is JustWorks (no PIN, no Pi-side UI). Companion app on
+  Android auto-confirms via a `BluetoothDevice.ACTION_PAIRING_REQUEST`
+  receiver so Samsung's persistent pair dialog doesn't pop up on every
+  reconnect.
 - The hotspot password is auto-generated on first boot and persisted in
   `device.json`. Read it via the **Dashboard** screen in the app.
 - See [docs/bluetooth.md](./docs/bluetooth.md) for the full GATT
@@ -149,20 +168,38 @@ Note:
 For more details, including instructions on how to image your microSD with Raspberry Pi OS, refer to [installation.md](./docs/installation.md). You can also checkout [this YouTube tutorial](https://youtu.be/L5PvQj1vfC4).
 
 ## Update
-To update your InkyPi with the latest code changes, follow these steps:
-1. Navigate to the project directory:
-    ```bash
-    cd JKL-InkyPi
-    ```
-2. Fetch the latest changes from the repository:
-    ```bash
-    git pull
-    ```
-3. Run the update script with sudo:
-    ```bash
-    sudo bash install/update.sh
-    ```
-This process ensures that any new updates, including code changes and additional dependencies, are properly applied without requiring a full reinstallation.
+
+You have two ways to apply updates — pick whichever fits.
+
+### From the companion app (recommended)
+- Open the app → **Settings → Updates**.
+- If you're behind upstream, tap **Update now**. A modal sheet shows
+  each phase (`preflight` → `git pull` → `update.sh`) with collapsible
+  per-step output so any failure is diagnosable without SSH.
+- A **Re-apply latest (force)** option is available even when you're
+  already at HEAD — useful when systemd unit files or config drifted
+  on the Pi and you want to overwrite them from the repo.
+- Estimated time: 1-8 minutes depending on whether apt / pip have
+  real work to do. Don't power-cycle the Pi while it's running.
+
+### Manually via SSH
+```bash
+cd ~/JKL-InkyPi
+git pull
+sudo bash install/update.sh
+```
+`update.sh` short-circuits with "Already up to date" when the working
+tree hasn't moved since the last applied commit — pass `--force` to
+re-apply anyway. It diffs the systemd unit files (`inkypi.service`,
+`inkypi-ble.service`, `inkypi-netd.service`) and the avahi service
+definition, daemon-reloads + restarts only the units that actually
+changed.
+
+Both paths cover the same ground: apt deps, pip deps, the CLI
+shim, vendored JS/CSS, systemd units, and the avahi mDNS service
+file. The Python source under `src/` is symlinked from
+`/usr/local/inkypi/src/` so it picks up `git pull` automatically once
+`inkypi.service` restarts.
 
 ## Uninstall
 To install InkyPi, simply run the following command:
