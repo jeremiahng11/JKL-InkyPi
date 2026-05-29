@@ -116,6 +116,85 @@ def api_display_history_replay(entry_id):
         return jsonify({"error": str(exc)}), 500
 
 
+@main_bp.route('/api/wifi/scan')
+def api_wifi_scan():
+    """HTTP fast-path for the companion app's Wi-Fi screen.
+
+    The app previously did this over BLE (sendWifi 'scan'), which
+    cost a full nmcli rescan PLUS BLE framing overhead — combined
+    ~5-7s on a Pi Zero 2 W. Going direct over HTTP cuts the BLE
+    framing tax (~400ms) and lets the screen run scan + saved
+    fetches truly in parallel.
+    """
+    from network import wifi as _wifi
+    try:
+        networks = _wifi.scan()
+        return jsonify({
+            "networks": [
+                {
+                    "ssid":     n.ssid,
+                    "signal":   n.signal,
+                    "security": n.security,
+                    "in_use":   n.in_use,
+                }
+                for n in networks
+            ],
+        })
+    except Exception as exc:
+        return jsonify({"error": str(exc), "networks": []}), 500
+
+
+@main_bp.route('/api/wifi/saved')
+def api_wifi_saved():
+    """Saved Wi-Fi SSIDs (nmcli profiles, excluding the AP fallback).
+    Independent from /api/wifi/scan — saved profiles populate
+    instantly while a scan is in flight."""
+    from network import wifi as _wifi
+    try:
+        return jsonify({"ssids": _wifi.list_saved()})
+    except Exception as exc:
+        return jsonify({"error": str(exc), "ssids": []}), 500
+
+
+@main_bp.route('/api/wifi/connect', methods=['POST'])
+def api_wifi_connect():
+    """Connect to an SSID. {ssid, password?}. Same handler the BLE
+    bridge calls, exposed for the companion app's Wi-Fi screen."""
+    from network import wifi as _wifi
+    body = request.get_json(silent=True) or {}
+    ssid = body.get('ssid')
+    password = body.get('password')
+    if not ssid:
+        return jsonify({"error": "missing ssid"}), 400
+    try:
+        status = _wifi.connect(ssid, password=password)
+        return jsonify({
+            "success": True,
+            "wifi": {
+                "mode": status.mode,
+                "ssid": status.ssid,
+                "ip":   status.ip,
+            },
+        })
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@main_bp.route('/api/wifi/forget', methods=['POST'])
+def api_wifi_forget():
+    """Delete a saved Wi-Fi profile. {ssid}."""
+    from network import wifi as _wifi
+    body = request.get_json(silent=True) or {}
+    ssid = body.get('ssid')
+    if not ssid:
+        return jsonify({"error": "missing ssid"}), 400
+    try:
+        _wifi.forget(ssid)
+        return jsonify({"success": True})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
 @main_bp.route('/api/plugins/catalog')
 def api_plugins_catalog():
     """Rich plugin metadata for the companion app's plugin browser.
