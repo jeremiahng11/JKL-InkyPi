@@ -1,4 +1,5 @@
 from flask import Blueprint, request, jsonify, current_app, render_template, send_file
+import json
 import os
 from datetime import datetime
 
@@ -157,6 +158,20 @@ def api_about():
         except Exception:
             return 'unknown'
 
+    def _extra_adv_status():
+        """Read what the BLE service most recently wrote about the
+        secondary advertisement. None when no status file exists yet
+        (BLE service hasn't started, or is on an old build)."""
+        try:
+            with open('/run/inkypi/extra-adv.status') as f:
+                payload = json.load(f)
+            return {
+                "state":    payload.get("state", "unknown"),
+                "mfg_data": payload.get("mfg_data"),
+            }
+        except (OSError, json.JSONDecodeError):
+            return {"state": "unknown", "mfg_data": None}
+
     device_config = current_app.config['DEVICE_CONFIG']
     cfg = device_config.get_config()
 
@@ -174,6 +189,9 @@ def api_about():
             "inkypi-netd":  _service_state('inkypi-netd'),
             "bluetooth":    _service_state('bluetooth'),
         },
+        # Tells "is the IP-in-adv fast path actually advertising?"
+        # without needing journalctl access.
+        "ble_extra_adv":  _extra_adv_status(),
     })
 
 

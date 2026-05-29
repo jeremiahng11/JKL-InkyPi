@@ -319,6 +319,68 @@ time. The peripheral drops the partial buffer.
 
 ---
 
+## Advertisement payload — Wi-Fi IP in manufacturer data (v1)
+
+In addition to bless's default GATT advertisement, the Pi registers a
+**second** `LEAdvertisement1` (see `src/ble/extra_adv.py`) that broadcasts
+the device's current Wi-Fi address so the companion app can probe HTTP
+*without ever opening a GATT connection*. Mirror of the same data the
+INFO characteristic carries, except it's available in the raw
+scan-result payload — no connect required.
+
+### Manufacturer data layout
+
+| Bytes  | Field          | Notes                                    |
+|:------:|:---------------|:-----------------------------------------|
+| 0      | version        | always `0x01` for v1                     |
+| 1      | wifi mode      | `0x01` = client, `0x02` = AP, `0x00` = offline (advert is suppressed in this case) |
+| 2-5    | IPv4 octets    | big-endian, e.g. `192.168.0.246`         |
+
+- Total length: **6 bytes**
+- **Company ID**: `0xFFFF` (SIG-reserved for testing; fine for ad-hoc
+  use on a private network). Apps that aren't InkyPi-aware see this
+  as an unknown company-id blob and ignore it.
+
+### Advertising interval
+
+The secondary advertisement sets `MinInterval=160`, `MaxInterval=320`
+(in 0.625ms BLE slots, so **100ms–200ms**). BlueZ's default is roughly
+1280ms, so the Pi is ~6-13× more discoverable. Small power cost,
+~5-6× faster scan discovery on the client.
+
+### Refresh cadence
+
+The IP block is re-packed every time `_push_info` runs — i.e. the 15s
+INFO refresh tick plus immediately after any handler that changes Wi-Fi
+state (`WifiHandler` join / disconnect). The
+`PropertiesChanged(ManufacturerData)` D-Bus signal makes BlueZ pick up
+the new payload without re-registering the whole advert.
+
+### App-side decoder (companion app)
+
+```dart
+({String ip, String mode})? decodeInkyPiAdvertisedAddress(
+    Map<int, List<int>> manufacturerData) {
+  final raw = manufacturerData[0xFFFF];
+  if (raw == null || raw.length < 6) return null;
+  if (raw[0] != 1) return null;                  // version
+  final mode = switch (raw[1]) {
+    0x01 => 'client',
+    0x02 => 'ap',
+    _    => 'offline',
+  };
+  if (mode == 'offline') return null;
+  final ip = '${raw[2]}.${raw[3]}.${raw[4]}.${raw[5]}';
+  return (ip: ip, mode: mode);
+}
+```
+
+Pure function — round-trippable against `extra_adv._pack_manufacturer_data`
+on the Pi. Bump the version byte if the layout ever changes; the app
+treats unknown versions as "no data" and falls back to BLE connect.
+
+---
+
 ## Reference UUIDs (quick copy)
 
 ```

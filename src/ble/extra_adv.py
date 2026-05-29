@@ -1,5 +1,16 @@
 """Custom BLE advertisement registered alongside bless's default one.
 
+Status file
+-----------
+
+This module writes its current state to
+``/run/inkypi/extra-adv.status`` after every start() / stop() so the
+Flask app can surface "is the secondary advert actually registered?"
+in /api/about without snooping the BLE service's process state. One
+of ``registered`` / ``skipped`` / ``unknown`` plus the packed mfg
+data as hex.
+
+
 Two reasons for this exists:
 
 1. **Embed the current Wi-Fi IP in the advertisement payload.** The
@@ -35,10 +46,27 @@ Mirrored on the app side by ``decodeInkyPiAdvertisedAddress`` in
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 from typing import Optional
 
 logger = logging.getLogger("inkypi-ble.extra_adv")
+
+# Where we write our health status so /api/about can read it without
+# IPC into the BLE service. systemd's RuntimeDirectory= drops
+# /run/inkypi/ for inkypi.service, but inkypi-ble.service runs as root
+# and the path may not exist yet — create it as needed.
+STATUS_PATH = "/run/inkypi/extra-adv.status"
+
+
+def _write_status(state: str, mfg_hex: Optional[str] = None) -> None:
+    try:
+        os.makedirs(os.path.dirname(STATUS_PATH), exist_ok=True)
+        with open(STATUS_PATH, "w") as f:
+            json.dump({"state": state, "mfg_data": mfg_hex}, f)
+    except OSError:
+        logger.debug("Could not write %s", STATUS_PATH, exc_info=True)
 
 ADV_PATH = "/org/inkypi/ble/extra_adv"
 ADV_IFACE = "org.bluez.LEAdvertisement1"
@@ -105,6 +133,7 @@ class ExtraAdvertisement:
              method, PropertyAccess) = _import_dbus()
         except _ImportError as exc:
             logger.warning("Skipping extra BLE advertisement: %s", exc)
+            _write_status("skipped")
             return
 
         service_uuid = self._service_uuid
@@ -171,8 +200,10 @@ class ExtraAdvertisement:
                 int(MAX_INTERVAL_SLOTS * 0.625),
                 payload.hex() if payload else "<none>",
             )
+            _write_status("registered", payload.hex() if payload else None)
         except Exception:
             logger.exception("Failed to register extra BLE advertisement")
+            _write_status("skipped")
             await self.stop()
 
     def update_address(self, mode: Optional[str], ip: Optional[str]) -> None:
@@ -190,6 +221,8 @@ class ExtraAdvertisement:
                 "Extra advertisement mfg updated: %s",
                 payload.hex() if payload else "<none>",
             )
+            if self._registered:
+                _write_status("registered", payload.hex() if payload else None)
 
     async def stop(self) -> None:
         if self._bus is None:
@@ -209,3 +242,4 @@ class ExtraAdvertisement:
         self._bus = None
         self._adv = None
         self._registered = False
+        _write_status("skipped")
