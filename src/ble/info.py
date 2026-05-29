@@ -37,9 +37,10 @@ def build_info(config_file: str, hotspot_cfg: hotspot.HotspotConfig, bridge: Fla
             "ip":       hotspot_cfg.gateway,
         },
         "display": {
-            "resolution":      cfg.get("resolution"),
-            "current_plugin":  cfg.get("refresh_info", {}).get("plugin_id"),
-            "last_refresh":    cfg.get("refresh_info", {}).get("refresh_time"),
+            "resolution":             cfg.get("resolution"),
+            "current_plugin":         cfg.get("refresh_info", {}).get("plugin_id"),
+            "last_refresh":           cfg.get("refresh_info", {}).get("refresh_time"),
+            "cycle_interval_seconds": cfg.get("plugin_cycle_interval_seconds"),
         },
         "flask_reachable": bridge.reachable(),
     }

@@ -972,9 +972,10 @@ def api_info():
             "ip":       hotspot_cfg.get("gateway", "192.168.4.1"),
         },
         "display": {
-            "resolution":     cfg.get("resolution"),
-            "current_plugin": cfg.get("refresh_info", {}).get("plugin_id"),
-            "last_refresh":   cfg.get("refresh_info", {}).get("refresh_time"),
+            "resolution":             cfg.get("resolution"),
+            "current_plugin":         cfg.get("refresh_info", {}).get("plugin_id"),
+            "last_refresh":           cfg.get("refresh_info", {}).get("refresh_time"),
+            "cycle_interval_seconds": cfg.get("plugin_cycle_interval_seconds"),
         },
         # Trivially true — if the caller hit this endpoint, Flask is up.
         "flask_reachable": True,
