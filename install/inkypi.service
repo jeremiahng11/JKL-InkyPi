@@ -1,7 +1,13 @@
 [Unit]
 Description=InkyPi App
-After=network-online.target
-Wants=network-online.target
+# network.target (not network-online.target) — we only need the
+# network stack to exist, not an upstream route. waitress binds to
+# 0.0.0.0:80 and serves localhost + the Pi's own AP fine without
+# Wi-Fi. Waiting on network-online here used to stall the whole stack
+# ~60-90s when a relocated Pi's saved Wi-Fi was out of range, which
+# also delayed the BLE bridge's first Flask call (and made it look
+# like BLE itself was broken in that window).
+After=network.target
 
 [Service]
 User=root

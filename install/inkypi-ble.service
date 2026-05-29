@@ -1,6 +1,13 @@
 [Unit]
 Description=InkyPi BLE Peripheral
-After=bluetooth.service inkypi.service
+# Deliberately NOT ordered after inkypi.service — Flask waits on
+# network-online.target, which can hang for ~60-90s at a relocated
+# Pi whose saved Wi-Fi isn't in range. Blocking BLE on that defeats
+# its primary purpose (provisioning new Wi-Fi when no network exists
+# yet). The BLE handlers tolerate Flask being absent (bridge calls
+# return 599; INFO reports flask_reachable=false), so coming up
+# before / without Flask is safe.
+After=bluetooth.service
 Wants=bluetooth.service
 
 [Service]
