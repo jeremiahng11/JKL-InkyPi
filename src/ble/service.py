@@ -21,11 +21,12 @@ from typing import Optional
 
 from ble import framing
 from ble.bridge import FlaskBridge
+from ble.extra_adv import ExtraAdvertisement
 from ble.gatt import ASSUMED_MTU, CHAR_UUIDS, SERVICE_UUID
 from ble.handlers import CommandHandler, UploadHandler, WifiHandler
 from ble.info import build_info
 from ble.pairing_agent import PairingAgent
-from network import hotspot
+from network import hotspot, wifi as wifi_status
 
 logger = logging.getLogger("inkypi-ble")
 
@@ -78,6 +79,7 @@ class BleService:
         self.mtu = ASSUMED_MTU
         self._stop_event: Optional[asyncio.Event] = None
         self.pairing_agent = PairingAgent()
+        self.extra_adv = ExtraAdvertisement(SERVICE_UUID)
 
     # ------------------------------------------------------------- lifecycle
 
@@ -136,6 +138,16 @@ class BleService:
         except Exception:
             logger.exception("Pairing agent failed to start — pair prompts may recur")
 
+        # Start the secondary advertisement that carries Wi-Fi IP +
+        # uses a faster advertising interval. Non-fatal on failure —
+        # bless's own advertisement keeps running, just without the
+        # extra speed + IP-in-adv benefits.
+        try:
+            self._refresh_extra_adv()
+            await self.extra_adv.start()
+        except Exception:
+            logger.exception("Extra advertisement failed to start")
+
         self._stop_event = asyncio.Event()
         info_task = asyncio.create_task(self._info_refresher())
         watchdog_task = asyncio.create_task(self._advertisement_watchdog())
@@ -160,6 +172,10 @@ class BleService:
                 await self.pairing_agent.stop()
             except Exception:
                 logger.warning("pairing_agent.stop() raised", exc_info=True)
+            try:
+                await self.extra_adv.stop()
+            except Exception:
+                logger.warning("extra_adv.stop() raised", exc_info=True)
             self.bridge.close()
             logger.info("BLE peripheral stopped")
 
@@ -234,6 +250,22 @@ class BleService:
             return
         char.value = build_info(CONFIG_FILE, self.hotspot_cfg, self.bridge)
         self.server.update_value(SERVICE_UUID, CHAR_UUIDS["info"])
+        # Keep the BLE-adv IP in lockstep with INFO so scanners that
+        # never connect still see the current Wi-Fi address.
+        self._refresh_extra_adv()
+
+    def _refresh_extra_adv(self) -> None:
+        """Pack the current wifi mode + IP into the extra advert. No-op
+        when wifi isn't reachable or the extra advert hasn't been
+        started yet."""
+        try:
+            status = wifi_status.current_status()
+        except Exception:
+            status = None
+        if status is None:
+            self.extra_adv.update_address(None, None)
+            return
+        self.extra_adv.update_address(status.mode, status.ip)
 
     async def _info_refresher(self) -> None:
         while True:
