@@ -345,6 +345,207 @@ def api_updates_check():
         return jsonify({"error": str(e), "available": False, "behind": 0}), 500
 
 
+@main_bp.route('/api/updates/apply/stream', methods=['POST'])
+def api_updates_apply_stream():
+    """Streaming version of /api/updates/apply.
+
+    Returns newline-delimited JSON events (Content-Type:
+    application/x-ndjson) as the update runs, so the companion app
+    can render live progress instead of staring at a spinner for
+    8 minutes. The non-streaming endpoint is kept around for older
+    app builds.
+
+    Events:
+      {"event":"stage_start","stage":"preflight|git_pull|update_sh"}
+      {"event":"log","line":"…"}                          # per-line as update.sh prints
+      {"event":"stage_complete","stage":"…","step":{...}} # step is same shape as
+                                                          # /api/updates/apply
+      {"event":"done","success":bool,"stage":"…","error":str?,"steps":[...]}
+
+    Why streaming fixes the SIGINT-at-exit-2 bug: waitress closes a
+    request after channel_timeout (120s default) of no I/O on the
+    socket. Long apt installs produce no stdout for minutes; the
+    socket goes idle; waitress kills it; the subprocess gets killed
+    too. Yielding a JSON event per stdout line keeps the socket
+    busy and the run finishes cleanly.
+    """
+    from flask import Response, stream_with_context
+
+    return Response(
+        stream_with_context(_apply_update_streaming(request)),
+        mimetype='application/x-ndjson',
+    )
+
+
+def _apply_update_streaming(req):
+    """Generator that yields ndjson events as the update progresses.
+    Pulled out into a top-level helper so it can be reused / tested
+    independently of the Flask Response wrapper."""
+    import json as _json
+    import os as _os
+    import subprocess
+
+    def _emit(payload):
+        return _json.dumps(payload) + "\n"
+
+    src_dir = _os.path.realpath(_os.path.dirname(_os.path.dirname(__file__)))
+    repo_root = _os.path.dirname(src_dir)
+
+    body = req.get_json(silent=True) or {}
+    force = bool(body.get('force'))
+    discard_local = bool(body.get('discard_local_changes'))
+
+    # Environment for every subprocess: explicit TERM so tput doesn't
+    # spew "unknown terminal" warnings into the log. Inherit the rest
+    # so PATH / HOME / sudo timestamps work normally.
+    base_env = _os.environ.copy()
+    base_env.setdefault('TERM', 'dumb')
+
+    def _run_sync(cmd, timeout):
+        try:
+            r = subprocess.run(
+                cmd, cwd=repo_root, capture_output=True, text=True,
+                timeout=timeout, env=base_env,
+            )
+            return {
+                "cmd":       ' '.join(cmd),
+                "exit_code": r.returncode,
+                "stdout":    (r.stdout or '')[-65536:],
+                "stderr":    (r.stderr or '')[-65536:],
+                "timed_out": False,
+            }
+        except subprocess.TimeoutExpired as exc:
+            return {
+                "cmd":       ' '.join(cmd),
+                "exit_code": -1,
+                "stdout":    (exc.stdout.decode('utf-8', 'replace') if isinstance(exc.stdout, bytes) else (exc.stdout or ''))[-32768:],
+                "stderr":    (exc.stderr.decode('utf-8', 'replace') if isinstance(exc.stderr, bytes) else (exc.stderr or ''))[-32768:],
+                "timed_out": True,
+            }
+
+    def _run_streaming(cmd, timeout):
+        """Like _run_sync but yields ('log', line) tuples as the
+        process prints, returns the final step dict at end. Used for
+        update.sh which is the slow phase."""
+        import time as _time
+        proc = subprocess.Popen(
+            cmd, cwd=repo_root, env=base_env,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            bufsize=1, text=True,
+        )
+        start = _time.monotonic()
+        collected = []
+        timed_out = False
+        try:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                line = line.rstrip('\n')
+                collected.append(line)
+                yield ('log', line)
+                if _time.monotonic() - start > timeout:
+                    proc.kill()
+                    timed_out = True
+                    break
+        finally:
+            try:
+                exit_code = proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                exit_code = -1
+                timed_out = True
+        yield ('step', {
+            "cmd":       ' '.join(cmd),
+            "exit_code": exit_code,
+            "stdout":    '\n'.join(collected[-1000:]),
+            "stderr":    '',
+            "timed_out": timed_out,
+        })
+
+    steps = []
+
+    # ─── stage: preflight ────────────────────────────────────────────
+    yield _emit({"event": "stage_start", "stage": "preflight"})
+    diff_check = _run_sync(
+        ['git', '-c', 'safe.directory=*', '-C', repo_root, 'status', '--porcelain'],
+        timeout=5)
+    steps.append(diff_check)
+    yield _emit({"event": "stage_complete", "stage": "preflight", "step": diff_check})
+
+    if diff_check["exit_code"] != 0:
+        yield _emit({"event": "done", "success": False, "stage": "preflight",
+                     "error": "could not read git status", "steps": steps})
+        return
+    if diff_check["stdout"].strip():
+        if not discard_local:
+            dirty_lines = diff_check["stdout"].strip().splitlines()[:30]
+            yield _emit({
+                "event": "done", "success": False, "stage": "preflight",
+                "error": "Working tree has uncommitted changes.",
+                "dirty_files": dirty_lines, "can_discard": True,
+                "steps": steps,
+            })
+            return
+        yield _emit({"event": "log", "line": "Stashing local changes…"})
+        stash = _run_sync(
+            ['git', '-c', 'safe.directory=*', '-C', repo_root,
+             'stash', 'push', '-u', '-m', 'inkypi-pre-update'],
+            timeout=15)
+        steps.append(stash)
+        yield _emit({"event": "stage_complete", "stage": "preflight",
+                     "step": stash})
+        if stash["exit_code"] != 0:
+            yield _emit({
+                "event": "done", "success": False, "stage": "preflight",
+                "error": "Could not stash local changes — see step output.",
+                "steps": steps,
+            })
+            return
+
+    # ─── stage: git pull ─────────────────────────────────────────────
+    yield _emit({"event": "stage_start", "stage": "git_pull"})
+    pull = _run_sync(
+        ['git', '-c', 'safe.directory=*', '-C', repo_root, 'pull', '--ff-only'],
+        timeout=60)
+    steps.append(pull)
+    if pull["stdout"]:
+        for line in pull["stdout"].splitlines():
+            yield _emit({"event": "log", "line": line})
+    yield _emit({"event": "stage_complete", "stage": "git_pull", "step": pull})
+    if pull["exit_code"] != 0:
+        yield _emit({"event": "done", "success": False, "stage": "git_pull",
+                     "error": "git pull failed — see steps for details",
+                     "steps": steps})
+        return
+
+    # ─── stage: update.sh — streamed line-by-line ────────────────────
+    yield _emit({"event": "stage_start", "stage": "update_sh"})
+    update_cmd = ['sudo', '-E', 'bash', _os.path.join(repo_root, 'install', 'update.sh')]
+    if force:
+        update_cmd.append('--force')
+    final_step = None
+    for kind, payload in _run_streaming(update_cmd, timeout=1800):
+        if kind == 'log':
+            yield _emit({"event": "log", "line": payload})
+        else:
+            final_step = payload
+    if final_step is None:
+        final_step = {"cmd": ' '.join(update_cmd), "exit_code": -1,
+                      "stdout": '', "stderr": 'no step result',
+                      "timed_out": False}
+    steps.append(final_step)
+    yield _emit({"event": "stage_complete", "stage": "update_sh",
+                 "step": final_step})
+
+    success = final_step["exit_code"] == 0 and not final_step["timed_out"]
+    yield _emit({
+        "event":   "done",
+        "success": success,
+        "stage":   "complete" if success else "update_sh",
+        "error":   None if success else "update.sh exited with non-zero status",
+        "steps":   steps,
+    })
+
+
 @main_bp.route('/api/updates/apply', methods=['POST'])
 def api_updates_apply():
     """Pull + run install/update.sh in-place from the companion app.
