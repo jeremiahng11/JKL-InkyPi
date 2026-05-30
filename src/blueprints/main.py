@@ -421,6 +421,75 @@ def api_updates_check():
         return jsonify({"error": str(e), "available": False, "behind": 0}), 500
 
 
+@main_bp.route('/api/updates/ota/releases')
+def api_updates_ota_releases():
+    """List recent releases from the upstream GitHub repo.
+
+    Used by the companion app's Updates screen to populate a tag
+    picker for the OTA flow (an alternative to `git pull`).
+    Returns {"releases": [...], "repo": "owner/name"} on success.
+    """
+    src_dir = os.path.realpath(os.path.dirname(os.path.dirname(__file__)))
+    repo_root = os.path.dirname(src_dir)
+    from utils import ota as _ota
+    try:
+        owner_repo = _ota.detect_github_repo(repo_root)
+        repo_label = '/'.join(owner_repo) if owner_repo else None
+        releases = _ota.list_releases(repo_root, limit=20)
+        return jsonify({"releases": releases, "repo": repo_label})
+    except Exception as exc:
+        current_app.logger.exception("OTA releases listing failed")
+        return jsonify({"error": str(exc)}), 502
+
+
+@main_bp.route('/api/updates/ota/apply', methods=['POST'])
+def api_updates_ota_apply():
+    """Streaming apply of a release tarball — alternative to the
+    existing /api/updates/apply/stream which goes via `git pull`.
+
+    Same NDJSON event shape so the companion app's progress UI can
+    consume both endpoints with one parser. Stage names: preflight →
+    download → update_sh.
+
+    Body: {"tag": "vX.Y.Z"}.
+    """
+    from flask import stream_with_context
+    body = request.get_json(silent=True) or {}
+    tag = (body.get('tag') or '').strip()
+    if not tag:
+        return jsonify({"error": "Missing 'tag' in request body"}), 400
+    src_dir = os.path.realpath(os.path.dirname(os.path.dirname(__file__)))
+    repo_root = os.path.dirname(src_dir)
+
+    from utils import ota as _ota
+    import json as _json
+
+    def _gen():
+        # Schedule the deferred service restart on success — same
+        # pattern as /api/updates/apply/stream. Captures the success
+        # flag without holding refs to the Flask request after the
+        # generator exits.
+        success = False
+        try:
+            for event in _ota.apply_release_streaming(
+                    repo_root, tag, defer_restart=True):
+                if event.get("event") == "done" and event.get("success"):
+                    success = True
+                yield _json.dumps(event) + "\n"
+        finally:
+            if success:
+                import subprocess as _sp
+                _sp.Popen(
+                    ['bash', '-c', 'sleep 8 && systemctl restart inkypi.service'],
+                    start_new_session=True,
+                )
+
+    return current_app.response_class(
+        stream_with_context(_gen()),
+        mimetype='application/x-ndjson',
+    )
+
+
 @main_bp.route('/api/updates/apply/stream', methods=['POST'])
 def api_updates_apply_stream():
     """Streaming version of /api/updates/apply.
