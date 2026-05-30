@@ -111,7 +111,41 @@ class RefreshTask:
                             logger.error(f"Plugin config not found for '{refresh_action.get_plugin_id()}'.")
                             continue
                         plugin = get_plugin_instance(plugin_config)
-                        image = refresh_action.execute(plugin, self.device_config, current_dt)
+                        # Render with one automatic retry after 30s for autopilot
+                        # refreshes. Plugin renders fail for transient reasons all
+                        # the time — rate limits, DNS blips, upstream 503s — and a
+                        # silent retry-once gets us past most of them without the
+                        # display showing stale content for the rest of the cycle.
+                        # Manual updates skip the retry: the user is blocked
+                        # waiting, so it's better to surface the error fast than
+                        # add 30s of dead time.
+                        is_manual = isinstance(refresh_action, ManualRefresh)
+                        max_attempts = 1 if is_manual else 2
+                        image = None
+                        last_error = None
+                        for attempt in range(max_attempts):
+                            try:
+                                image = refresh_action.execute(plugin, self.device_config, current_dt)
+                                last_error = None
+                                break
+                            except Exception as exc:
+                                last_error = exc
+                                logger.exception(
+                                    "Plugin render failed (attempt %d/%d) for '%s'",
+                                    attempt + 1, max_attempts,
+                                    refresh_action.get_plugin_id(),
+                                )
+                                if attempt < max_attempts - 1:
+                                    logger.info("Retrying render in 30s after transient failure")
+                                    # condition.wait releases the lock so stop()
+                                    # or a manual_update() can interrupt the
+                                    # backoff. Re-check running afterward in
+                                    # case stop() fired during the wait.
+                                    self.condition.wait(timeout=30)
+                                    if not self.running:
+                                        return
+                        if last_error is not None:
+                            raise last_error
                         image_hash = compute_image_hash(image)
 
                         refresh_info = refresh_action.get_refresh_info()
