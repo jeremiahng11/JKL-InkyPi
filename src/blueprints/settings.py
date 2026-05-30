@@ -1,10 +1,12 @@
 from flask import Blueprint, request, jsonify, current_app, render_template, Response
 from utils.time_utils import calculate_seconds
 from datetime import datetime, timedelta
+import json
 import os
 import pytz
 import logging
 import io
+import time
 
 # Try to import cysystemd for journal reading (Linux only)
 try:
@@ -160,4 +162,117 @@ def download_logs():
     except Exception as e:
         logger.error(f"Error reading logs: {e}")
         return Response(f"Error reading logs: {e}", status=500, mimetype="text/plain")
+
+
+# Shared with /download-logs — keep one source of truth.
+_LOG_ALLOWED_UNITS = {
+    "inkypi.service",
+    "inkypi-ble.service",
+    "inkypi-netd.service",
+    "bluetooth.service",
+}
+
+
+def _normalize_log_service(raw: str) -> str:
+    """Normalize ?service= query param and fall back to inkypi if unknown.
+
+    Whitelists units so we can't be tricked into tailing arbitrary
+    systemd journals (sshd, kernel ring buffer, etc.).
+    """
+    svc = raw or "inkypi.service"
+    if not svc.endswith('.service'):
+        svc = f"{svc}.service"
+    if svc not in _LOG_ALLOWED_UNITS:
+        svc = "inkypi.service"
+    return svc
+
+
+@settings_bp.route('/api/logs/stream')
+def stream_logs():
+    """Server-Sent Events stream of journal entries for a service.
+
+    Yields a short backfill (last few minutes) so the UI shows recent
+    context immediately, then live-tails new entries as they arrive.
+    Sends a ": keepalive" comment every ~15s when idle so intermediary
+    proxies / phone network state don't time the connection out.
+
+    Each data event is JSON: {ts, ident, pid, msg}. The companion
+    app's live log view parses these directly without a second decode
+    of the journal envelope.
+    """
+    if not JOURNAL_AVAILABLE:
+        # Surface the dev-mode case in a stream-shaped reply so the
+        # companion can render "log streaming unavailable" without
+        # special-casing the HTTP status.
+        def _err_gen():
+            yield 'data: {"error":"journal unavailable (dev mode)"}\n\n'
+        return Response(_err_gen(), mimetype="text/event-stream")
+
+    service = _normalize_log_service(request.args.get('service', ''))
+    try:
+        backfill_minutes = max(0, min(60, int(request.args.get('backfill_minutes', '5'))))
+    except ValueError:
+        backfill_minutes = 5
+
+    def _format(record):
+        try:
+            ts_us = record.get_realtime_usec()
+            ts = datetime.fromtimestamp(ts_us / 1_000_000).isoformat()
+        except Exception:
+            ts = ""
+        data = record.data
+        payload = {
+            "ts":    ts,
+            "ident": data.get("SYSLOG_IDENTIFIER") or data.get("_COMM", "?"),
+            "pid":   data.get("_PID"),
+            "msg":   (data.get("MESSAGE") or "").rstrip(),
+        }
+        return f"data: {json.dumps(payload)}\n\n"
+
+    def gen():
+        reader = JournalReader()
+        reader.open(JournalOpenMode.SYSTEM)
+        reader.add_filter(Rule("_SYSTEMD_UNIT", service))
+        since = datetime.now() - timedelta(minutes=backfill_minutes)
+        reader.seek_realtime_usec(int(since.timestamp() * 1_000_000))
+
+        # First flush — initial "I'm connected" marker so the client
+        # can flip its UI out of the "Connecting…" state even if the
+        # backfill window is empty.
+        yield 'data: {"event":"open","service":"' + service + '"}\n\n'
+
+        last_keepalive = time.monotonic()
+        while True:
+            emitted = False
+            try:
+                for record in reader:
+                    yield _format(record)
+                    emitted = True
+                    last_keepalive = time.monotonic()
+            except Exception:
+                # If the journal handle goes sideways, surface it as a
+                # one-shot error event and exit the generator. Client
+                # reconnects to recover.
+                logger.exception("journal tail failed")
+                yield 'data: {"error":"journal tail failed"}\n\n'
+                return
+            if not emitted:
+                if time.monotonic() - last_keepalive > 15:
+                    yield ": keepalive\n\n"
+                    last_keepalive = time.monotonic()
+                time.sleep(1.0)
+
+    return Response(
+        gen(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control":      "no-cache",
+            # Defense in depth — Nginx wouldn't be in front of us in
+            # the field but in case someone proxies this through one.
+            "X-Accel-Buffering":  "no",
+            # waitress chunked transfer is on by default; this just
+            # documents intent.
+            "Transfer-Encoding":  "chunked",
+        },
+    )
 
