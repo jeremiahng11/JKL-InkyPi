@@ -226,8 +226,56 @@ def api_plugins_catalog():
             "requires_api_key": meta.get('requires_api_key', False),
             "configured":       pid in used_ids,
         })
+    # Annotate with recent-error count from the in-process ring buffer
+    # so the catalog list can show a red dot on plugins that have been
+    # failing without the UI doing N follow-up requests.
+    try:
+        from utils import plugin_errors as _pe
+        err_map = _pe.get_all()
+        for entry in catalog:
+            errs = err_map.get(entry["id"]) or []
+            entry["recent_error_count"] = len(errs)
+            entry["last_error_at"] = errs[0]["at"] if errs else None
+    except Exception:
+        pass
     catalog.sort(key=lambda c: (not c["configured"], (c["display_name"] or '').lower()))
     return jsonify({"plugins": catalog})
+
+
+@main_bp.route('/api/plugins/errors')
+def api_plugin_errors_all():
+    """Recent render failures across every plugin, newest first per id.
+
+    {"errors": {"weather": [{"at": ..., "type": ..., "message": ...}, ...]}}.
+    Used by the companion app's dashboard to surface a "3 plugins have
+    been failing" indicator without polling N per-plugin endpoints.
+    """
+    from utils import plugin_errors
+    return jsonify({"errors": plugin_errors.get_all()})
+
+
+@main_bp.route('/api/plugins/<plugin_id>/errors')
+def api_plugin_errors_one(plugin_id):
+    """Recent render failures for one plugin id, newest first.
+
+    Errors come from the in-process ring buffer; reset on service
+    restart. Each entry is {at: ISO timestamp, type: exception class,
+    message: short str}.
+    """
+    from utils import plugin_errors
+    return jsonify({
+        "plugin_id": plugin_id,
+        "errors": plugin_errors.get(plugin_id),
+    })
+
+
+@main_bp.route('/api/plugins/<plugin_id>/errors', methods=['DELETE'])
+def api_plugin_errors_clear(plugin_id):
+    """Drop the error buffer for one plugin (after the user has
+    acknowledged the failure on the companion app)."""
+    from utils import plugin_errors
+    plugin_errors.clear(plugin_id)
+    return jsonify({"ok": True})
 
 
 @main_bp.route('/api/plugin_order', methods=['POST'])

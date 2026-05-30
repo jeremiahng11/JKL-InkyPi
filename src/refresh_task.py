@@ -135,6 +135,20 @@ class RefreshTask:
                                     attempt + 1, max_attempts,
                                     refresh_action.get_plugin_id(),
                                 )
+                                # Push every attempt into the per-plugin
+                                # error ring buffer — both attempts of a
+                                # retried failure get recorded so the
+                                # companion app can show "rate limited
+                                # twice in a row" not just the second one.
+                                try:
+                                    from utils import plugin_errors
+                                    plugin_errors.record(
+                                        refresh_action.get_plugin_id(),
+                                        f"attempt {attempt + 1}/{max_attempts}: {exc}",
+                                        error_type=type(exc).__name__,
+                                    )
+                                except Exception:
+                                    logger.exception("plugin_errors record failed")
                                 if attempt < max_attempts - 1:
                                     logger.info("Retrying render in 30s after transient failure")
                                     # condition.wait releases the lock so stop()
