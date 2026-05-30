@@ -15,13 +15,16 @@ done
 SCRIPT_DIR=$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )
 
 APPNAME="inkypi"
-INSTALL_PATH="/usr/local/$APPNAME"
-BINPATH="/usr/local/bin"
-VENV_PATH="$INSTALL_PATH/venv_$APPNAME"
+# Path overrides are honored when provided in the environment so the
+# test harness in install/test/ can sandbox without rewriting paths.
+# All four fall back to the production defaults on a real install.
+INSTALL_PATH="${INSTALL_PATH:-/usr/local/$APPNAME}"
+BINPATH="${BINPATH:-/usr/local/bin}"
+VENV_PATH="${VENV_PATH:-$INSTALL_PATH/venv_$APPNAME}"
 
 SERVICE_FILE="$APPNAME.service"
 SERVICE_FILE_SOURCE="$SCRIPT_DIR/$SERVICE_FILE"
-SERVICE_FILE_TARGET="/etc/systemd/system/$SERVICE_FILE"
+SERVICE_FILE_TARGET="${SERVICE_FILE_TARGET:-/etc/systemd/system/$SERVICE_FILE}"
 
 APT_REQUIREMENTS_FILE="$SCRIPT_DIR/debian-requirements.txt"
 PIP_REQUIREMENTS_FILE="$SCRIPT_DIR/requirements.txt"
@@ -30,7 +33,7 @@ PIP_REQUIREMENTS_FILE="$SCRIPT_DIR/requirements.txt"
 # re-runs short-circuit when there's nothing new to apply — useful
 # when the user reflexively runs update.sh after every git pull and
 # the pull was a no-op.
-LAST_UPDATE_MARKER="/var/lib/inkypi/last-updated-commit"
+LAST_UPDATE_MARKER="${LAST_UPDATE_MARKER:-/var/lib/inkypi/last-updated-commit}"
 FORCE_UPDATE=0
 # Defer the inkypi.service restart for use when update.sh is being
 # called from *inside* a Flask request (the companion app's
@@ -150,8 +153,10 @@ get_os_version() {
 }
 
 
-# Ensure script is run with sudo
-if [ "$EUID" -ne 0 ]; then
+# Ensure script is run with sudo. The test harness sets
+# SKIP_ROOT_CHECK=1 because EUID is bash-readonly and can't be
+# clobbered to fake "running as root" from a test runner.
+if [ -z "${SKIP_ROOT_CHECK:-}" ] && [ "$EUID" -ne 0 ]; then
   echo_error "ERROR: This script requires root privileges. Please run it with sudo."
   exit 1
 fi
