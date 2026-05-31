@@ -421,6 +421,31 @@ def api_updates_check():
         return jsonify({"error": str(e), "available": False, "behind": 0}), 500
 
 
+@main_bp.route('/api/plugins/clock/faces')
+def api_plugins_clock_faces():
+    """Expose the clock plugin's built-in face list to the companion
+    app so it can render a face-picker without hardcoding the catalog.
+
+    Returns {"faces": [{name, primary_color, secondary_color, icon_url}]}.
+    Icon URLs are absolute server paths (the same /images/<plugin_id>
+    route the web UI uses) so the app's <Image.network> can fetch
+    them directly.
+    """
+    from plugins.clock.clock import CLOCK_FACES
+    out = []
+    for face in CLOCK_FACES:
+        icon = face.get('icon') or ''
+        # The web UI uses `url_for('plugin.image', plugin_id='clock', filename=face.icon)`
+        # which resolves to /images/clock/<filename>. Mirror that here.
+        out.append({
+            'name':            face['name'],
+            'primary_color':   face['primary_color'],
+            'secondary_color': face['secondary_color'],
+            'icon_url':        f'/images/clock/{icon}',
+        })
+    return jsonify({"faces": out})
+
+
 @main_bp.route('/api/updates/ota/releases')
 def api_updates_ota_releases():
     """List recent releases from the upstream GitHub repo.
