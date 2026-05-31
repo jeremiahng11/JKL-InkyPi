@@ -11,6 +11,9 @@ InkyPi is an open-source, customizable E-Ink display powered by a Raspberry Pi. 
 - Web Interface allows you to update and configure the display from any device on your network
 - **Bluetooth control via the InkyPi Companion app** — set up Wi-Fi, swap plugins, upload images, and tweak settings from your phone with no web browser needed
 - **Wi-Fi hotspot fallback** — when InkyPi has no upstream network it broadcasts its own access point so you're never locked out, even on a fresh install
+- **Self-healing renders** — plugin failures are retried once after a 30 s backoff before the cycle moves on; recent failures are recorded in a per-plugin ring buffer surfaced to the companion app
+- **Live log streaming** — `/api/logs/stream` (Server-Sent Events) tails the systemd journal of any whitelisted service for diagnostics from the phone
+- **Streaming updates** — the companion app drives `update.sh` over a streaming NDJSON endpoint with deferred service restart, auto-snapshot, and incomplete-apply detection
 - Minimize distractions: no LEDS, noise, or notifications, just the content you care about
 - Easy installation and configuration, perfect for beginners and makers alike
 - Open source project allowing you to modify, customize, and create your own plugins
@@ -43,21 +46,25 @@ Companion app source + build instructions:
 
 ### What you can do from the app
 
+The companion app uses a four-tab bottom nav: **Dashboard / Photos / Plugins / Settings**.
+
 | Screen | Capability |
 |--------|------------|
-| **Find InkyPi** | Single list of every reachable Pi — Wi-Fi targets (mDNS + cached IP + IP from BLE-advertisement manufacturer data, deduplicated) on top, Bluetooth scan results below. Wi-Fi is auto-preferred when reachable. |
-| **Dashboard** | Live status: Wi-Fi mode + SSID + IP, e-ink resolution, current plugin. Inline preview of what's on the display with refresh, force re-render, and skip-next buttons. CPU / memory / disk / load stats card auto-pauses when you're on a different tab. |
-| **Photos** | Gallery of every uploaded image flattened across instances. Tap to view full-size, display now, or delete. FAB opens the Upload flow. |
-| **Playlists** | Create / edit / time-bound / reorder playlists. Tap any plugin instance to push it to the display immediately. |
+| **Find InkyPi** | Single list of every reachable Pi — Wi-Fi targets (mDNS + cached IP + IP from BLE-advertisement manufacturer data, deduplicated) on top, Bluetooth scan results below. Wi-Fi is auto-preferred when reachable. First-launch users see a 3-page onboarding flow first (welcome → Bluetooth permission → Wi-Fi explainer). |
+| **Dashboard** | Live status: Wi-Fi mode + SSID + IP, e-ink resolution, "Now showing X · 5m ago", "Next refresh in ~Nm" countdown, multi-device switcher with per-device reachability dots, Pi health badge in the app bar. Inline preview auto-refreshes whenever the Pi reports a new render. Skip / force-refresh buttons show a spinner while the request is in flight. CPU / memory / disk / load stats card auto-pauses when you're on a different tab. A "Pi restarting" pane replaces the generic "Not connected" view during update / reboot windows; a local notification fires when the Pi is reachable again. |
+| **Photos** | Gallery of every uploaded image flattened across instances. Tap to view full-size, display now, or delete. **Long-press to enter selection mode** → bulk delete picks per-instance (drops the whole instance when all of its images are selected, removes individuals otherwise). FAB opens the Upload flow. |
+| **Plugins** | Browse configured plugins, switch the active one, tap an instance to push it to the display, or edit any instance (name, refresh interval, settings). For clock instances the editor surfaces a native **face picker** (Gradient / Digital / Divided / Word) with primary / secondary color inputs. The catalog page has a search box and shows a **red error pill** on any plugin that's been failing recently — tap it for the per-plugin error history. |
 | **Upload image** | Pick from gallery / camera / URL. Transport picker shows whether you're going over Wi-Fi (fast) or Bluetooth (slow); cellular-only state surfaces a "join the same Wi-Fi for ~1000× faster uploads" hint. Optional **Save to playlist** + custom refresh interval. |
-| **Settings → Wi-Fi setup** | Scan visible networks, join one, add hidden networks, forget saved ones. Works over BLE for first-time provisioning. |
-| **Settings → Plugins** | Browse plugins, switch the active one, reorder the listing the "New instance" picker shows. |
+| **Settings → Device** | Device name, timezone, orientation, time format, plugin cycle interval — all in a card-grouped form with segmented buttons and an inline cycle-interval readout. |
+| **Settings → Wi-Fi setup** | Scan visible networks (deduplicated by SSID — strongest BSSID wins on mesh / dual-band routers), join one, add hidden networks, forget saved ones. Works over BLE for first-time provisioning. |
+| **Settings → Content** | **Playlists** (create / edit / time-bound / reorder) and **Plugin order** (customize the cycle order across instances). |
 | **Settings → API keys** | OpenAI / weather / calendar tokens — edits `.env` on the Pi. |
-| **Settings → Logs** | Tail the `inkypi.service` journal and share / copy. |
-| **Settings → Backup / restore** | Snapshot `device.json` to a copyable JSON envelope. Restore replaces it atomically. |
-| **Settings → Updates** | Shows commits behind upstream + the short changelog. **Update now** button triggers `git pull && install/update.sh` remotely with live step-by-step progress + collapsible per-stage stdout/stderr on failure — no SSH needed. |
+| **Settings → Logs** | Two modes: snapshot of the last N hours, or **live tail over Server-Sent Events** with auto-scroll, "Jump to latest" pill when scrolled up, and a service selector. |
+| **Settings → Backup / restore** | Snapshot `device.json` to a copyable JSON envelope. Restore replaces it atomically. The Updates screen also takes an **auto-snapshot before every apply** that can be restored from one tap. |
+| **Settings → Updates** | Two paths. **git pull + update.sh** with live NDJSON step-by-step progress + collapsible per-stage stdout/stderr on failure. **OTA via GitHub release tarball** (alternative path) for cases where the working tree is dirty / not a git checkout. SSH fallback at the bottom is pre-filled with `ssh inky@<live IP>` from the dashboard. |
 | **Settings → Network override** | Pin the Pi's IP / hostname manually when auto-discovery picks the wrong address. |
-| **Settings → About** | Identity + service health snapshot, including whether the BLE secondary advertisement registered cleanly. |
+| **Settings → Appearance** | Inline theme picker — System / Light / Dark. |
+| **Settings → About** | Identity + service health snapshot, including whether the BLE secondary advertisement registered cleanly. "Show intro again" replays the onboarding flow. |
 
 ### First-time setup walkthrough
 
@@ -169,18 +176,37 @@ For more details, including instructions on how to image your microSD with Raspb
 
 ## Update
 
-You have two ways to apply updates — pick whichever fits.
+You have three ways to apply updates — pick whichever fits.
 
-### From the companion app (recommended)
+### From the companion app — git pull path (default)
 - Open the app → **Settings → Updates**.
 - If you're behind upstream, tap **Update now**. A modal sheet shows
-  each phase (`preflight` → `git pull` → `update.sh`) with collapsible
-  per-step output so any failure is diagnosable without SSH.
+  each phase (`preflight` → `git pull` → `update.sh`) with live log
+  streaming and collapsible per-step output so any failure is
+  diagnosable without SSH.
+- The app takes an **auto-snapshot of `device.json`** before the apply
+  starts, surfaced as a one-tap restore tile on the same screen if
+  things go sideways.
 - A **Re-apply latest (force)** option is available even when you're
   already at HEAD — useful when systemd unit files or config drifted
   on the Pi and you want to overwrite them from the repo.
+- A **Finish update** button appears when a previous run half-finished
+  (incomplete-apply detection via the `LAST_UPDATE_MARKER` vs `HEAD`
+  comparison) — re-runs `update.sh` against the code already on disk
+  to reconcile apt / pip / unit-file state.
 - Estimated time: 1-8 minutes depending on whether apt / pip have
   real work to do. Don't power-cycle the Pi while it's running.
+
+### From the companion app — OTA release tarball
+- Open the app → **Settings → Updates** → **Apply a tagged release**.
+- Lists the most recent GitHub releases for this repo (inferred from
+  the Pi's `git remote get-url origin`).
+- Tap a tag → confirm → tarball downloads, extracts over the working
+  checkout (preserving `.git/`), then runs `install/update.sh`
+  with the same streaming progress UI.
+- Useful when the Pi's working tree is dirty, when it isn't a git
+  checkout at all, or when you want to pin to a specific published
+  version without dealing with detached HEAD.
 
 ### Manually via SSH
 ```bash
@@ -195,11 +221,36 @@ re-apply anyway. It diffs the systemd unit files (`inkypi.service`,
 definition, daemon-reloads + restarts only the units that actually
 changed.
 
-Both paths cover the same ground: apt deps, pip deps, the CLI
+All three paths cover the same ground: apt deps, pip deps, the CLI
 shim, vendored JS/CSS, systemd units, and the avahi mDNS service
 file. The Python source under `src/` is symlinked from
 `/usr/local/inkypi/src/` so it picks up `git pull` automatically once
 `inkypi.service` restarts.
+
+### Testing `update.sh`
+
+A shell test harness lives at `install/test/run_tests.sh`. It sandboxes
+`apt-get` / `sudo` / `systemctl` / `lsb_release` / `tput` via PATH-shim
+binaries and exercises seven invariants:
+
+- non-root invocation exits with a clear error
+- `--defer-restart` skips `inkypi.service` restart (the path the
+  companion app's streaming update uses to avoid SIGTERMing its own
+  parent Flask process)
+- the default path DOES restart `inkypi.service`
+- short-circuits cleanly when `LAST_UPDATE_MARKER` matches `HEAD`
+- `--force` bypasses the short-circuit
+- missing virtualenv exits with the documented error
+- the marker file is written with the current `HEAD` on success
+
+```bash
+bash install/test/run_tests.sh
+```
+
+`update.sh` honors `INSTALL_PATH`, `BINPATH`, `VENV_PATH`,
+`SERVICE_FILE_TARGET`, `LAST_UPDATE_MARKER` and `SKIP_ROOT_CHECK` env
+overrides so the harness can sandbox without modifying the script.
+All fall back to production defaults on a real install.
 
 ## Uninstall
 To install InkyPi, simply run the following command:
