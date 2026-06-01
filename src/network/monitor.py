@@ -24,9 +24,24 @@ logger = logging.getLogger(__name__)
 class MonitorOptions:
     interval_seconds: float = 10.0
     client_grace_seconds: float = 45.0   # time to wait after boot before failing over
-    reachability_host: str = "1.1.1.1"
-    reachability_port: int = 53
-    reachability_timeout: float = 3.0
+
+    # How many consecutive "no client connection" ticks we need to see
+    # before flipping to AP mode. At the default 10s interval, 6 ticks
+    # = ~60s of sustained downtime. Anything shorter and a single
+    # nmcli hiccup or DHCP renewal tears the client connection down
+    # for nothing — the original cause of the "Wi-Fi dies after a few
+    # hours" bug.
+    failover_after_consecutive: int = 6
+
+    # Optional WAN reachability check. When None (default) we trust the
+    # NM client-mode + IP signal alone — flipping to AP just because a
+    # 3s TCP probe to a public DNS resolver failed is a net loss: the
+    # user is usually on the same LAN as the Pi and tearing down the
+    # client connection drops them too. Set to a (host, port, timeout)
+    # tuple if you really want to demand WAN connectivity; it then only
+    # counts a tick as "failed" when BOTH NM says no-client AND the
+    # probe fails (never the other way round).
+    reachability_probe: Optional[tuple[str, int, float]] = None
 
 
 class ConnectivityMonitor:
@@ -50,6 +65,9 @@ class ConnectivityMonitor:
         self._clock = clock
         self._sleep = sleep
         self._started_at = clock()
+        # Counts ticks where NM reported no usable client connection.
+        # Resets to 0 the moment we see a healthy client again.
+        self._consecutive_failures = 0
 
     def run_forever(self) -> None:
         logger.info("Connectivity monitor started")
@@ -61,24 +79,80 @@ class ConnectivityMonitor:
             logger.info("Connectivity monitor interrupted")
 
     def tick(self) -> None:
-        """Inspect Wi-Fi state once and update AP accordingly."""
+        """Inspect Wi-Fi state once and update AP accordingly.
+
+        Decision tree (precedence from top):
+
+          1. NM reports we're a Wi-Fi client and we have an IP address →
+             the link is up regardless of whether the public Internet is
+             reachable. Stay on client mode; bringing the AP up here
+             would only sever the LAN connection the user has to the Pi.
+          2. Otherwise count the failure. Only fail over to AP after
+             ``failover_after_consecutive`` *consecutive* tick failures
+             so single-tick blips (nmcli temporary error, mid-flight
+             DHCP renewal, antenna sleep) don't tear down a working
+             connection.
+        """
         try:
             status = wifi.current_status()
         except Exception:
             logger.exception("Failed to read Wi-Fi status")
             return
 
-        if status.mode == "client" and status.ip and self._reachable():
+        if status.mode == "client" and status.ip:
+            if self._consecutive_failures > 0:
+                logger.info(
+                    "Wi-Fi client connection back (was %d consecutive failures)",
+                    self._consecutive_failures,
+                )
+            self._consecutive_failures = 0
             self._ensure_ap_down()
             return
 
-        # Grace period after boot — don't flip into AP mode if NM is still
-        # negotiating a client connection.
-        if (self._clock() - self._started_at) < self.options.client_grace_seconds:
-            if status.mode != "ap":
-                logger.debug("Within grace period; deferring AP fallback")
-                return
+        # Boot grace: don't flip into AP mode while NM is still
+        # negotiating the initial client connection. We DO let the
+        # failure counter accumulate during this window so we recover
+        # quickly the moment grace ends if there's still no client.
+        within_boot_grace = (
+            (self._clock() - self._started_at) < self.options.client_grace_seconds
+        )
 
+        # Optional WAN probe — disabled by default. When set, only ticks
+        # where BOTH client is missing AND WAN is unreachable count as
+        # failures. We never use WAN-unreachable alone to tear down a
+        # working client connection; that's what bit the original
+        # implementation.
+        wan_required_failure = True
+        if self.options.reachability_probe is not None:
+            wan_required_failure = not self._reachable(self.options.reachability_probe)
+        if wan_required_failure:
+            self._consecutive_failures += 1
+
+        if within_boot_grace and status.mode != "ap":
+            logger.debug(
+                "Within boot grace period; deferring AP fallback "
+                "(%d/%d failures so far)",
+                self._consecutive_failures,
+                self.options.failover_after_consecutive,
+            )
+            return
+
+        if self._consecutive_failures < self.options.failover_after_consecutive:
+            logger.debug(
+                "No client connection but only %d/%d consecutive failures; "
+                "deferring AP fallback",
+                self._consecutive_failures,
+                self.options.failover_after_consecutive,
+            )
+            return
+
+        if status.mode != "ap":
+            logger.info(
+                "No client connection for %d consecutive ticks "
+                "(~%.0fs); bringing AP fallback up",
+                self._consecutive_failures,
+                self._consecutive_failures * self.options.interval_seconds,
+            )
         self._ensure_ap_up()
 
     # ------------------------------------------------------------------ helpers
@@ -99,18 +173,13 @@ class ConnectivityMonitor:
         except Exception:
             logger.exception("Failed to stop AP fallback")
 
-    def _reachable(self) -> bool:
-        """Lightweight TCP probe to confirm the link actually carries traffic.
-
-        Carrier + IP is not the same as Internet. We attempt a 3s TCP connect
-        to a well-known DNS responder; failure means the AP fallback should
-        stay on so the user can still talk to InkyPi locally.
-        """
+    @staticmethod
+    def _reachable(probe: tuple[str, int, float]) -> bool:
+        """Optional WAN reachability check. Only used when
+        ``MonitorOptions.reachability_probe`` is explicitly set."""
+        host, port, timeout = probe
         try:
-            with socket.create_connection(
-                (self.options.reachability_host, self.options.reachability_port),
-                timeout=self.options.reachability_timeout,
-            ):
+            with socket.create_connection((host, port), timeout=timeout):
                 return True
         except OSError:
             return False
