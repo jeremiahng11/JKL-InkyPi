@@ -107,12 +107,24 @@ def activate_saved(ssid: str, timeout: int = 30) -> bool:
     "the BSSID it last saw", and refuses to autoconnect until something
     explicitly tells it to.
 
+    Forces a fresh `dev wifi rescan` first because `con up` will fail
+    with "no network with SSID '<x>' found" if NM hasn't seen the AP
+    on its own scan loop yet — exactly the state we're trying to dig
+    out of.
+
     Returns True if nmcli reports activation success, False otherwise.
     Doesn't raise on failure; callers usually want to try the next
     profile rather than blow up the loop.
     """
     if not ssid:
         return False
+    try:
+        # Trigger a scan before activation. Best-effort: failures here
+        # don't block the con up attempt (NM may already have a fresh
+        # scan in cache).
+        run(["dev", "wifi", "rescan"], check=False, timeout=15)
+    except Exception:
+        pass
     try:
         run(["con", "up", "id", ssid, "ifname", WIFI_IFACE], timeout=timeout)
         return True

@@ -38,10 +38,10 @@ class MonitorOptions:
     # trusting NM to autoconnect. NM sometimes doesn't auto-reconnect
     # after a move — it last associated to a specific BSSID, then the
     # Pi is relocated and the SSID is back in range but on a different
-    # AP, and NM sits there until something nudges it. Defaults to 2
-    # (~20s after the first failure), well before AP failover so the
-    # user gets the home Wi-Fi back if it's reachable.
-    rescue_saved_after_consecutive: int = 2
+    # AP, and NM sits there until something nudges it. Defaults to 1
+    # (~10s after boot / first observed outage), well before AP
+    # failover so the user gets the home Wi-Fi back if it's reachable.
+    rescue_saved_after_consecutive: int = 1
 
     # Optional WAN reachability check. When None (default) we trust the
     # NM client-mode + IP signal alone — flipping to AP just because a
