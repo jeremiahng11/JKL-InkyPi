@@ -399,6 +399,20 @@ def api_updates_check():
             except OSError:
                 pass
 
+        # Pick up the most recent failure record (if any) and the
+        # in-flight lock so the app can render the right state when
+        # the user's last apply was interrupted by a phone-sleep,
+        # network blip, etc. — those scenarios used to look identical
+        # to "everything's fine" on a fresh check.
+        last_failure = _read_update_failure()
+        running = None
+        try:
+            with open('/var/lib/inkypi/update-running.json') as _f:
+                import json as _json2
+                running = _json2.load(_f)
+        except (OSError, ValueError):
+            running = None
+
         return jsonify({
             "available":           behind > 0,
             "behind":              behind,
@@ -409,11 +423,21 @@ def api_updates_check():
             # can render an advisory ("Couldn't reach GitHub; showing
             # cached refs") rather than silently returning offline.
             "fetch_warning":       fetch_failed,
-            # NEW: HEAD doesn't match LAST_UPDATE_MARKER → previous
+            # HEAD doesn't match LAST_UPDATE_MARKER → previous
             # update.sh run was interrupted; system state is out of
             # sync with the code on disk.
             "incomplete_apply":    incomplete,
             "last_applied_short":  last_applied_short,
+            # Persistent failure record from the most recent apply, if
+            # the user disconnected mid-apply or the run failed but
+            # the streaming response was already closed. Cleared by a
+            # subsequent successful apply.
+            "last_failure":        last_failure,
+            # If an update is in flight RIGHT NOW (detached subprocess
+            # from a previous request whose client went away), surface
+            # it so the app can render "still running" instead of
+            # offering an Update button that would race.
+            "currently_running":   running,
         })
     except subprocess.TimeoutExpired:
         return jsonify({"error": "git command timed out", "available": False, "behind": 0}), 504
@@ -515,6 +539,14 @@ def api_updates_ota_apply():
     )
 
 
+@main_bp.route('/api/updates/last-failure', methods=['DELETE'])
+def api_updates_clear_failure():
+    """Drop the persisted last-failure record. Used by the companion
+    app's "Dismiss" button on the recovered-after-failure banner."""
+    _clear_update_failure()
+    return jsonify({"ok": True})
+
+
 @main_bp.route('/api/updates/apply/stream', methods=['POST'])
 def api_updates_apply_stream():
     """Streaming version of /api/updates/apply.
@@ -547,6 +579,67 @@ def api_updates_apply_stream():
     )
 
 
+_FAILURE_RECORD_PATH = '/var/lib/inkypi/last-update-failure.json'
+
+
+def _write_update_failure(stage: str, error: str, last_step: dict | None = None) -> None:
+    """Persist a small JSON record of the most recent apply failure so the
+    companion app can surface it AFTER the streaming connection has closed.
+
+    The streaming NDJSON 'done' event with success=false is fine when the
+    HTTP connection survives, but transient Wi-Fi drops + Pi-side service
+    restarts during the apply mean the app often misses that frame. The
+    file is the durable equivalent — readable by /api/updates/check at
+    any time, cleared by a subsequent successful apply.
+    """
+    import json as _json
+    import os as _os
+    import time
+    try:
+        _os.makedirs(_os.path.dirname(_FAILURE_RECORD_PATH), exist_ok=True)
+        payload = {
+            "stage":   stage,
+            "error":   error,
+            "at":      time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+            # Tail of the most diagnostic-rich step (usually update.sh).
+            # Truncated so the file never blows past a few KB.
+            "cmd":     (last_step or {}).get("cmd"),
+            "exit_code": (last_step or {}).get("exit_code"),
+            "stdout_tail": ((last_step or {}).get("stdout") or "")[-4096:],
+            "stderr_tail": ((last_step or {}).get("stderr") or "")[-4096:],
+            "timed_out": (last_step or {}).get("timed_out", False),
+        }
+        with open(_FAILURE_RECORD_PATH, 'w') as f:
+            _json.dump(payload, f)
+    except OSError:
+        # Best-effort — never let bookkeeping failures mask the real
+        # error the user is trying to read.
+        pass
+
+
+def _clear_update_failure() -> None:
+    """Drop the failure record after a successful apply so the app stops
+    showing the stale 'last failure' banner."""
+    import os as _os
+    try:
+        if _os.path.isfile(_FAILURE_RECORD_PATH):
+            _os.remove(_FAILURE_RECORD_PATH)
+    except OSError:
+        pass
+
+
+def _read_update_failure() -> dict | None:
+    import json as _json
+    import os as _os
+    if not _os.path.isfile(_FAILURE_RECORD_PATH):
+        return None
+    try:
+        with open(_FAILURE_RECORD_PATH) as f:
+            return _json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
 def _apply_update_streaming(req):
     """Generator that yields ndjson events as the update progresses.
     Pulled out into a top-level helper so it can be reused / tested
@@ -556,6 +649,16 @@ def _apply_update_streaming(req):
     import subprocess
 
     def _emit(payload):
+        # On every failure event, persist the failure to disk before
+        # yielding it — so even if the network drops mid-flight the
+        # companion app sees it on the next /api/updates/check.
+        if payload.get("event") == "done" and not payload.get("success", True):
+            steps = payload.get("steps") or []
+            _write_update_failure(
+                stage=payload.get("stage") or "unknown",
+                error=payload.get("error") or "Update failed",
+                last_step=steps[-1] if steps else None,
+            )
         return _json.dumps(payload) + "\n"
 
     src_dir = _os.path.realpath(_os.path.dirname(_os.path.dirname(__file__)))
@@ -631,6 +734,98 @@ def _apply_update_streaming(req):
             "timed_out": timed_out,
         })
 
+    def _run_streaming_detached(cmd, timeout):
+        """Like _run_streaming but the subprocess runs in its own session
+        and writes to a log file on disk instead of a pipe. The HTTP
+        request tails the log so the user sees live progress; if the
+        client disconnects (phone screen sleep is the classic cause)
+        the subprocess keeps running to completion and the next
+        /api/updates/check sees the result via the LAST_UPDATE_MARKER
+        and / or the on-disk failure record.
+
+        Lock file at /var/lib/inkypi/update-running.json marks the
+        apply as in-flight so callers can distinguish "still running"
+        from "stream dropped, apply failed."
+        """
+        import time as _time
+        log_path = '/var/lib/inkypi/last-update.log'
+        lock_path = '/var/lib/inkypi/update-running.json'
+        _os.makedirs(_os.path.dirname(log_path), exist_ok=True)
+        # Truncate the log so we don't conflate runs.
+        log_fd = open(log_path, 'w', buffering=1)
+        try:
+            proc = subprocess.Popen(
+                cmd, cwd=repo_root, env=base_env,
+                stdout=log_fd, stderr=subprocess.STDOUT,
+                start_new_session=True,  # survive client disconnect
+            )
+        finally:
+            log_fd.close()
+
+        # Drop a marker the check endpoint can read.
+        import json as _json
+        try:
+            with open(lock_path, 'w') as f:
+                _json.dump({
+                    "pid":        proc.pid,
+                    "log_path":   log_path,
+                    "started_at": _time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+                    "cmd":        ' '.join(cmd),
+                }, f)
+        except OSError:
+            pass
+
+        start = _time.monotonic()
+        collected = []
+        timed_out = False
+        # Tail the log: open separately and read incrementally.
+        tail = open(log_path, 'r')
+        try:
+            while True:
+                line = tail.readline()
+                if line:
+                    line = line.rstrip('\n')
+                    collected.append(line)
+                    yield ('log', line)
+                    continue
+                # No new output. Check whether the process exited.
+                ret = proc.poll()
+                if ret is not None:
+                    # Drain any remaining buffered output.
+                    for trailing in tail:
+                        trailing = trailing.rstrip('\n')
+                        collected.append(trailing)
+                        yield ('log', trailing)
+                    break
+                if _time.monotonic() - start > timeout:
+                    # update.sh has gone past its budget — kill the
+                    # detached process group, not just the leader.
+                    try:
+                        _os.killpg(_os.getpgid(proc.pid), 15)  # SIGTERM
+                    except (ProcessLookupError, PermissionError):
+                        pass
+                    timed_out = True
+                    break
+                _time.sleep(0.25)
+            exit_code = proc.poll() if proc.poll() is not None else -1
+        finally:
+            try:
+                tail.close()
+            except Exception:
+                pass
+            try:
+                _os.remove(lock_path)
+            except OSError:
+                pass
+
+        yield ('step', {
+            "cmd":       ' '.join(cmd),
+            "exit_code": exit_code,
+            "stdout":    '\n'.join(collected[-1000:]),
+            "stderr":    '',
+            "timed_out": timed_out,
+        })
+
     steps = []
 
     # ─── stage: preflight ────────────────────────────────────────────
@@ -687,21 +882,25 @@ def _apply_update_streaming(req):
                      "steps": steps})
         return
 
-    # ─── stage: update.sh — streamed line-by-line ────────────────────
+    # ─── stage: update.sh — detached, tailed line-by-line ────────────
     yield _emit({"event": "stage_start", "stage": "update_sh"})
-    # --defer-restart tells update.sh's update_app_service to copy
-    # the new unit file but skip the inkypi.service restart —
-    # bouncing it from inside a Flask request would SIGTERM the
-    # parent and kill update.sh mid-run. We schedule a deferred
-    # restart below after the streaming response has finished
-    # flushing.
+    # The previous implementation spawned update.sh as a direct child
+    # of the Flask request. When the phone screen sleeps the OS pauses
+    # the HTTP stream; waitress eventually drops the connection and
+    # SIGTERMs the subprocess, killing the apply mid-run. Detach with
+    # start_new_session + redirect output to a log file so the apply
+    # survives the client going away. The streaming response then
+    # just tail-f's that log file and yields done when update.sh
+    # exits. If the client disappears the subprocess keeps running
+    # AND the on-disk failure record (written via _emit's hook) is
+    # waiting on the next /api/updates/check.
     update_cmd = ['sudo', '-E', 'bash',
                   _os.path.join(repo_root, 'install', 'update.sh'),
                   '--defer-restart']
     if force:
         update_cmd.append('--force')
     final_step = None
-    for kind, payload in _run_streaming(update_cmd, timeout=1800):
+    for kind, payload in _run_streaming_detached(update_cmd, timeout=1800):
         if kind == 'log':
             yield _emit({"event": "log", "line": payload})
         else:
@@ -716,6 +915,7 @@ def _apply_update_streaming(req):
 
     success = final_step["exit_code"] == 0 and not final_step["timed_out"]
     if success:
+        _clear_update_failure()
         # Spawn a detached child that waits ~8s (long enough for our
         # streaming response to flush + the client's HTTP buffer to
         # drain) and then bounces inkypi.service. start_new_session
