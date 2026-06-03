@@ -33,6 +33,16 @@ class MonitorOptions:
     # hours" bug.
     failover_after_consecutive: int = 6
 
+    # After this many consecutive "no client" ticks we start actively
+    # trying to bring saved Wi-Fi profiles up ourselves rather than
+    # trusting NM to autoconnect. NM sometimes doesn't auto-reconnect
+    # after a move — it last associated to a specific BSSID, then the
+    # Pi is relocated and the SSID is back in range but on a different
+    # AP, and NM sits there until something nudges it. Defaults to 2
+    # (~20s after the first failure), well before AP failover so the
+    # user gets the home Wi-Fi back if it's reachable.
+    rescue_saved_after_consecutive: int = 2
+
     # Optional WAN reachability check. When None (default) we trust the
     # NM client-mode + IP signal alone — flipping to AP just because a
     # 3s TCP probe to a public DNS resolver failed is a net loss: the
@@ -68,6 +78,10 @@ class ConnectivityMonitor:
         # Counts ticks where NM reported no usable client connection.
         # Resets to 0 the moment we see a healthy client again.
         self._consecutive_failures = 0
+        # Profiles we've tried to bring up during the current outage.
+        # Cleared whenever a healthy client returns so the next outage
+        # starts fresh.
+        self._attempted_profiles: set[str] = set()
 
     def run_forever(self) -> None:
         logger.info("Connectivity monitor started")
@@ -106,6 +120,7 @@ class ConnectivityMonitor:
                     self._consecutive_failures,
                 )
             self._consecutive_failures = 0
+            self._attempted_profiles.clear()
             self._ensure_ap_down()
             return
 
@@ -127,6 +142,16 @@ class ConnectivityMonitor:
             wan_required_failure = not self._reachable(self.options.reachability_probe)
         if wan_required_failure:
             self._consecutive_failures += 1
+
+        # Step in BEFORE the boot-grace check so we can rescue the
+        # saved profile even during boot — that's the exact window
+        # where NM auto-connect commonly stalls after a relocation.
+        if (
+            self._consecutive_failures
+            >= self.options.rescue_saved_after_consecutive
+            and status.mode != "ap"
+        ):
+            self._try_rescue_saved_profile()
 
         if within_boot_grace and status.mode != "ap":
             logger.debug(
@@ -156,6 +181,43 @@ class ConnectivityMonitor:
         self._ensure_ap_up()
 
     # ------------------------------------------------------------------ helpers
+
+    def _try_rescue_saved_profile(self) -> None:
+        """Walk the saved Wi-Fi profile list and explicitly `nmcli con up`
+        each one we haven't tried yet during the current outage.
+
+        Catches the common "Pi was moved, NM didn't autoconnect, no AP
+        fallback because we're not at threshold yet" scenario the user
+        reported: plug in at a new location, nothing comes up until
+        someone SSHes in and manually nudges NM.
+
+        Tries one profile per tick rather than blasting them all at
+        once — keeps nmcli single-threaded and lets the next tick see
+        whether the previous attempt actually succeeded before moving
+        on.
+        """
+        try:
+            saved = wifi.list_saved()
+        except Exception:
+            logger.exception("Could not enumerate saved Wi-Fi profiles")
+            return
+        candidates = [s for s in saved if s and s not in self._attempted_profiles]
+        if not candidates:
+            return
+        target = candidates[0]
+        self._attempted_profiles.add(target)
+        logger.info(
+            "No Wi-Fi client connection after %d ticks; trying to bring up "
+            "saved profile '%s' explicitly",
+            self._consecutive_failures, target,
+        )
+        try:
+            ok = wifi.activate_saved(target, timeout=30)
+        except Exception:
+            logger.exception("Rescue activation of '%s' raised", target)
+            ok = False
+        if ok:
+            logger.info("Saved profile '%s' activation requested", target)
 
     def _ensure_ap_up(self) -> None:
         if hotspot.is_active(self.hotspot_config.profile):

@@ -98,6 +98,29 @@ def forget(ssid: str) -> None:
     run(["con", "delete", ssid], check=False)
 
 
+def activate_saved(ssid: str, timeout: int = 30) -> bool:
+    """Bring up a saved NetworkManager profile by name.
+
+    Used by the connectivity monitor when NM didn't auto-connect to a
+    saved profile after a move / cold boot — common with the Pi Zero 2 W's
+    BCM43436 chip after a relocation: NM scans, sees the saved SSID isn't
+    "the BSSID it last saw", and refuses to autoconnect until something
+    explicitly tells it to.
+
+    Returns True if nmcli reports activation success, False otherwise.
+    Doesn't raise on failure; callers usually want to try the next
+    profile rather than blow up the loop.
+    """
+    if not ssid:
+        return False
+    try:
+        run(["con", "up", "id", ssid, "ifname", WIFI_IFACE], timeout=timeout)
+        return True
+    except Exception:
+        logger.exception("nmcli con up '%s' failed", ssid)
+        return False
+
+
 def list_saved() -> list[str]:
     """Return SSIDs of every saved Wi-Fi connection profile.
 

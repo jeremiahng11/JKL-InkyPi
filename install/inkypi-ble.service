@@ -12,6 +12,17 @@ Wants=bluetooth.service
 
 [Service]
 User=root
+# rfkill unblock as the FIRST pre-execs — covers the cold-boot case
+# where Pi OS or the BCM43436 firmware leaves Bluetooth (and
+# occasionally Wi-Fi too) soft-blocked. Without this, the bluetoothctl
+# pre-execs below silently no-op and the Python service fails to
+# register an advertisement. Symptom users hit: plug the Pi in at a
+# new location, Bluetooth is invisible AND Wi-Fi never connects;
+# SSH'ing in via USB OTG and waiting magically fixes everything.
+# The leading "-" makes both calls best-effort so missing rfkill (dev
+# laptops without it) doesn't abort startup.
+ExecStartPre=-/usr/sbin/rfkill unblock bluetooth
+ExecStartPre=-/usr/sbin/rfkill unblock wifi
 # Power on the adapter and enable pairability at every service start.
 # This makes the JustWorks pairing fix idempotent across upgrades —
 # existing installs that still have Pairable=false in main.conf get
