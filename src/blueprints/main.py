@@ -1248,16 +1248,38 @@ def api_system_cleanup():
 def get_system_stats():
     """Lightweight system snapshot for the companion app's dashboard card.
 
-    Returns CPU %, memory %, disk %, 1/5/15 min load averages, and the
-    Pi's uptime in seconds. Cheap enough to poll every few seconds.
+    Returns CPU %, memory %, disk %, 1/5/15 min load averages, the
+    Pi's uptime in seconds, plus a per-core CPU breakdown + count +
+    current frequency. Cheap enough to poll every few seconds —
+    psutil's per-core call is the same syscall path as the aggregate.
     """
     try:
         import psutil
         load = os.getloadavg()
         boot_time = psutil.boot_time()
         from time import time as _time
+
+        # `percpu=True` returns one entry per logical CPU. interval=0
+        # asks for the value since the last cpu_percent call (matches
+        # the existing aggregate's behavior so the two are consistent).
+        per_core = psutil.cpu_percent(interval=0, percpu=True)
+
+        # Frequency can be unavailable in containers / on some kernels
+        # — wrap defensively so a missing reading doesn't 500 the
+        # whole stats endpoint.
+        cpu_freq_mhz = None
+        try:
+            freq = psutil.cpu_freq()
+            if freq is not None:
+                cpu_freq_mhz = round(freq.current)
+        except Exception:
+            pass
+
         return jsonify({
             "cpu_percent":    psutil.cpu_percent(interval=0),
+            "cpu_count":      psutil.cpu_count(logical=True),
+            "cpu_per_core":   per_core,
+            "cpu_freq_mhz":   cpu_freq_mhz,
             "memory_percent": psutil.virtual_memory().percent,
             "disk_percent":   psutil.disk_usage('/').percent,
             "load_avg":       list(load),
